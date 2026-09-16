@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Network Monitor
+Name[fr]=Moniteur réseau
+GenericName=Cellular signal monitor
+Comment=Serving cell, signal levels, neighbours and log, read from ModemManager
+Comment[fr]=Cellule serveuse, niveaux de signal, voisines et journal, lus dans ModemManager
+Exec=network-monitor
+Icon=org.osmocom.NetworkMonitor
+Terminal=false
+Categories=Network;System;Monitor;GTK;
+Keywords=signal;cell;LTE;GSM;RSRP;modem;NSG;
+X-Purism-FormFactor=Workstation;Mobile;
+StartupNotify=true
