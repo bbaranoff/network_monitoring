@@ -170,8 +170,10 @@ class MainActivity : Activity() {
         }
 
         override fun onCallStateChanged(core: Core, call: Call, state: Call.State?, message: String) {
-            if (Bench.native(this@MainActivity)) return           // the native Phone app has the call
+            if (Bench.nativeActive(this@MainActivity)) return     // the native Phone app has the call
             val peer = call.remoteAddress.username ?: call.remoteAddress.asStringUriOnly()
+            // An incoming call must be HEARD, app in the background included.
+            if (state == Call.State.IncomingReceived) Bench.ring(this@MainActivity, peer) else Bench.stopRing()
             when (state) {
                 Call.State.IncomingReceived -> {
                     log("Appel entrant de $peer")
@@ -300,7 +302,9 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btn_natif_comptes).setOnClickListener { openAccounts() }
         findViewById<Button>(R.id.btn_proxy_on).setOnClickListener { proxy(true) }
         findViewById<Button>(R.id.btn_proxy_off).setOnClickListener { proxy(false) }
-        if (Proxy.enabled(this) || Bench.native(this)) startForegroundService(Intent(this, ProxyService::class.java))
+        // With an account, the line is held with the app closed: a foreground
+        // service keeps the process (and the SIP stack) alive, so a call rings.
+        if (enrolled) startForegroundService(Intent(this, ProxyService::class.java))
         listOf(R.id.btn_theme0, R.id.btn_theme1, R.id.btn_theme2).forEachIndexed { i, id ->
             findViewById<Button>(id).setOnClickListener {
                 if (prefs.getInt("theme", 0) != i) { prefs.edit().putInt("theme", i).apply(); recreate() }
@@ -353,7 +357,8 @@ class MainActivity : Activity() {
         val wanted = arrayOf(
             Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.READ_PHONE_STATE
-        ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        ).plus(if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else emptyArray())
+        .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         if (wanted.isNotEmpty()) requestPermissions(wanted.toTypedArray(), 1)
 
         node.setText(host)
@@ -378,7 +383,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         frameSource?.stop()
         core.removeListener(listener)
-        if (!Bench.native(this)) { core.stop(); Bench.core = null }
+        if (!enrolled) { core.stop(); Bench.core = null }       // an account: the stack outlives the screen
         super.onDestroy()
     }
 
@@ -773,6 +778,7 @@ class MainActivity : Activity() {
                     .putString("sip_transport", j.optString("sip_transport", "udp"))
                     .apply()
                 register()
+                startForegroundService(Intent(this, ProxyService::class.java))
                 show("phone")
             }
         }
@@ -880,8 +886,9 @@ class MainActivity : Activity() {
         findViewById<TextView>(R.id.natif_state).text = (if (extra.isEmpty()) "" else "$extra\n") + when {
             !on -> "Proxy inactif : appels et SMS du banc s'affichent dans cette appli."
             Bench.accountEnabled(this) -> "Proxy ACTIF : le compte « Banc » est activé dans l'appli Téléphone."
-            else -> "Proxy actif, mais le compte « Banc » n'est pas encore activé dans l'appli Téléphone : " +
-                "touchez « Comptes téléphoniques », puis activez-le. Sans cela, les appels du banc ne sonnent nulle part."
+            else -> "Proxy demandé, mais le compte « Banc » n'est PAS activé dans l'appli Téléphone : en attendant, " +
+                "les appels sonnent dans cette appli. Touchez « Comptes téléphoniques » et activez « Banc » ; " +
+                "si ce compte n'y figure pas, ce téléphone ne permet pas les comptes d'appel tiers."
         }
     }
 

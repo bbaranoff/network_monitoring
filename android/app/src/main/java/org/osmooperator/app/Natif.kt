@@ -51,6 +51,42 @@ object Bench {
     fun prefs(ctx: Context) = ctx.getSharedPreferences("compte", Context.MODE_PRIVATE)
     fun native(ctx: Context) = prefs(ctx).getBoolean("natif", false)
 
+    /** The native Phone app really has the calls: proxy on AND the account enabled
+     *  by the user. Until then the calls stay in this app - Telecom silently
+     *  ignores an incoming call on a disabled account, it would ring nowhere. */
+    fun nativeActive(ctx: Context) = native(ctx) && accountEnabled(ctx)
+
+    // ── Ringing in this app (no native UI for the call) ─────────────────────
+    private var ringtone: android.media.Ringtone? = null
+
+    fun ring(ctx: Context, from: String) {
+        stopRing()
+        try {
+            val uri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)
+            ringtone = android.media.RingtoneManager.getRingtone(ctx.applicationContext, uri)?.also { it.play() }
+        } catch (e: Exception) { }
+        val nm = ctx.getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel("appel", "Appels du banc", NotificationManager.IMPORTANCE_HIGH))
+        val open = PendingIntent.getActivity(ctx, 1,
+            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = Notification.Builder(ctx, "appel")
+            .setContentTitle("Appel entrant de $from")
+            .setContentText("Touchez pour répondre dans Network Monitor")
+            .setSmallIcon(android.R.drawable.sym_call_incoming)
+            .setCategory(Notification.CATEGORY_CALL)
+            .setFullScreenIntent(open, true)              // wakes the screen and shows the app
+            .setContentIntent(open).setOngoing(true)
+            .build()
+        try { nm.notify(42, n) } catch (e: SecurityException) { }
+    }
+
+    fun stopRing() {
+        try { ringtone?.stop() } catch (e: Exception) { }
+        ringtone = null
+        app?.getSystemService(NotificationManager::class.java)?.cancel(42)
+    }
+
     fun handle(ctx: Context) =
         PhoneAccountHandle(ComponentName(ctx.applicationContext, BenchConnectionService::class.java), "banc")
 
@@ -86,7 +122,7 @@ object Bench {
         c.addListener(object : CoreListenerStub() {
             override fun onCallStateChanged(core: Core, call: Call, state: Call.State?, message: String) {
                 val a = app ?: return
-                if (!native(a)) return
+                if (!nativeActive(a)) return                   // not ours: the app shows and rings the call
                 when (state) {
                     Call.State.IncomingReceived -> {
                         val num = call.remoteAddress.username ?: "inconnu"

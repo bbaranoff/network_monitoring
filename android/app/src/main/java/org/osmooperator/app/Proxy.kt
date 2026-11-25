@@ -137,8 +137,8 @@ class ProxyService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("proxy", "Proxy du banc", NotificationManager.IMPORTANCE_LOW))
         val n = Notification.Builder(this, "proxy")
-            .setContentTitle("Proxy du banc actif")
-            .setContentText("Le banc reste joignable, appli fermée.")
+            .setContentTitle("Banc en ligne")
+            .setContentText("Votre numéro du banc reste joignable, appli fermée.")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)
             .build()
@@ -155,7 +155,8 @@ class ProxyService : Service() {
         var announced = 0L
         // Also the keeper of the process while the bench lives in the native
         // apps (Natif.kt): the SIP stack must stay up with the screen closed.
-        while (running && (Proxy.enabled(this) || Bench.native(this))) {
+        // ... and of the line itself: with an account, calls must ring app closed.
+        while (running && (Proxy.enabled(this) || Bench.native(this) || Proxy.prefs(this).contains("sip_user"))) {
             val now = System.currentTimeMillis()
             if (!Proxy.enabled(this)) {
                 try { Thread.sleep(5000) } catch (e: InterruptedException) { break }
