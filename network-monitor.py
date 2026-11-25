@@ -1650,9 +1650,14 @@ class NodeUi:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=12, margin_bottom=16,
                       margin_start=10, margin_end=10)          # 16 : 364 px, plus qu un téléphone
         self.call_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
-                                 css_classes=["call-card"], visible=False)
-        self.call_peer = Gtk.Label(xalign=0, css_classes=["call-peer"], ellipsize=Pango.EllipsizeMode.END)
-        self.call_info = Gtk.Label(xalign=0, css_classes=["numeric"])
+                                 css_classes=["call-card"], visible=False,
+                                 vexpand=True, valign=Gtk.Align.CENTER)
+        # Pendant un appel, la carte prend la place du clavier : centrée, en grand.
+        self.call_icon = Gtk.Image(icon_name="call-start-symbolic", pixel_size=56, css_classes=["call-icon"],
+                                   margin_bottom=10)
+        self.call_peer = Gtk.Label(xalign=0.5, css_classes=["call-peer"], ellipsize=Pango.EllipsizeMode.END)
+        self.call_info = Gtk.Label(xalign=0.5, css_classes=["numeric", "call-info"])
+        self.call_card.append(self.call_icon)
         self.call_card.append(self.call_peer)
         self.call_card.append(self.call_info)
         box.append(self.call_card)
@@ -1670,6 +1675,7 @@ class NodeUi:
             key.connect("clicked", lambda _b, d=digit: self._key(d))
             grid.attach(key, i % 3, i // 3, 1, 1)
         box.append(grid)
+        self.dial_grid = grid
         row = Gtk.Box(spacing=22, halign=Gtk.Align.CENTER, margin_top=8)
 
         def round_btn(icon, classes, tip, cb, visible=True):
@@ -1681,11 +1687,12 @@ class NodeUi:
         self.b_call = round_btn("call-start-symbolic", ["go"], "Appeler", lambda *_: self.on_dial())
         self.b_hang = round_btn("call-stop-symbolic", ["destructive-action"], "Raccrocher",
                                 lambda *_: self.sip.hangup(), False)
-        for b in (round_btn("mail-send-symbolic", ["flat"], "Écrire à ce numéro", self._to_messages),
-                  self.b_answer, self.b_call, self.b_hang,
-                  round_btn("edit-clear-symbolic", ["flat"], "Effacer",
-                            lambda *_: self.number.set_text(self.number.get_text()[:-1]))):
+        self.dial_side = (round_btn("mail-send-symbolic", ["flat"], "Écrire à ce numéro", self._to_messages),
+                          round_btn("edit-clear-symbolic", ["flat"], "Effacer",
+                                    lambda *_: self.number.set_text(self.number.get_text()[:-1])))
+        for b in (self.dial_side[0], self.b_answer, self.b_call, self.b_hang, self.dial_side[1]):
             row.append(b)
+        row.set_margin_bottom(8)
         box.append(row)
         self.phone_stack.add_named(Adw.Clamp(maximum_size=420, child=box), "dial")
         return self.phone_stack
@@ -2040,6 +2047,10 @@ class NodeUi:
         self.b_hang.set_visible(busy)
         self.b_answer.set_visible(state == "incoming")
         self.call_card.set_visible(busy)
+        # Pas de clavier ni de champ de numéro pendant un appel : la carte au centre,
+        # décrocher / raccrocher dessous. (Il débordait de l écran et décentrait tout.)
+        for w in (self.number, self.dial_grid) + tuple(self.dial_side):
+            w.set_visible(not busy)
         for c in ("live", "ring"):
             self.call_card.remove_css_class(c)
         if busy:
@@ -2127,7 +2138,10 @@ CSS = b"""
 .dial-key .sub { font-size: 10px; font-weight: 700; opacity: 0.55; letter-spacing: 2px; }
 .call-btn { min-width: 68px; min-height: 68px; border-radius: 34px; }
 .call-btn.go { background-color: @success_bg_color; color: @success_fg_color; }
-.call-card { padding: 14px 18px; border-radius: 16px; }
+.call-card { padding: 28px 18px; border-radius: 24px; }
+.call-card .call-peer { font-size: 30px; font-weight: 800; }
+.call-card .call-info { font-size: 15px; opacity: 0.8; }
+.call-card.ring .call-icon { color: @success_color; }
 .call-card.live { background-color: alpha(@success_bg_color, 0.22); }
 .call-card.ring { background-color: alpha(@accent_bg_color, 0.25); }
 .call-peer { font-size: 22px; font-weight: 700; }
