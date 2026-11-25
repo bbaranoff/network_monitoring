@@ -96,6 +96,7 @@
                         <Button android:id="@+id/btn_proxy_on" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Activer" android:textAllCaps="false"/>
                         <Button android:id="@+id/btn_proxy_off" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Désactiver" android:textAllCaps="false"/>
                     </LinearLayout>
+                    <Button android:id="@+id/btn_proxy_rcs" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Relayer aussi les messages RCS (accès aux notifications)" android:textAllCaps="false"/>
                     <TextView android:id="@+id/proxy_state" android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="12dp" android:textIsSelectable="true"/>
                 </LinearLayout>
                 <LinearLayout android:id="@+id/panel_account" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">

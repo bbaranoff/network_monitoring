@@ -301,6 +301,10 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btn_natif_off).setOnClickListener { natif(false) }
         findViewById<Button>(R.id.btn_natif_comptes).setOnClickListener { openAccounts() }
         findViewById<Button>(R.id.btn_bt_pair).setOnClickListener { btPair() }
+        findViewById<Button>(R.id.btn_proxy_rcs).setOnClickListener {
+            try { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+            catch (e: Exception) { proxyNote("Paramètres > Notifications > Accès aux notifications : autorisez Network Monitor.") }
+        }
         findViewById<Button>(R.id.btn_proxy_on).setOnClickListener { proxy(true) }
         findViewById<Button>(R.id.btn_proxy_off).setOnClickListener { proxy(false) }
         // With an account, the line is held with the app closed: a foreground
@@ -372,7 +376,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (tab == "proxy") natifNote()                     // back from the calling-accounts screen
+        if (tab == "proxy") { natifNote(); proxyNote() }    // back from a settings screen
         ui.post(poll)
     }
 
@@ -1022,7 +1026,10 @@ class MainActivity : Activity() {
         val st = findViewById<TextView>(R.id.proxy_state)
         val on = Proxy.enabled(this)
         st.text = (if (extra.isEmpty()) "" else "$extra\n") +
-            (if (on) "Proxy ACTIF : les SMS de la SIM vont à ${prefs.getString("proxy_dest", "")} sur le banc."
+            (if (on) "Proxy ACTIF : les SMS de la SIM vont à ${prefs.getString("proxy_dest", "")} sur le banc.\n" +
+                (if (rcsAllowed()) "Messages RCS : relayés aussi (accès aux notifications accordé)."
+                else "Messages RCS (« chat » de Google Messages) : NON relayés. Ce ne sont pas des SMS ; " +
+                    "touchez le bouton ci-dessus et autorisez Network Monitor pour les relayer.")
             else "Proxy inactif.")
         if (!on || host.isEmpty()) return
         bg({ Proxy.call(this, "/proxy", null) ?: JSONObject() }) { d, _ ->
@@ -1030,6 +1037,10 @@ class MainActivity : Activity() {
                 st.text = "${st.text}\nNœud : ${if (d.optBoolean("actif")) "proxy vu (compte ${d.optString("user")})" else "pas encore vu"} · ${d.optInt("attente")} SMS en attente"
         }
     }
+
+    /** The user gave this app the notification access (needed for RCS). */
+    private fun rcsAllowed(): Boolean =
+        (Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: "").contains(packageName)
 
     private fun proxy(on: Boolean) {
         if (on) {

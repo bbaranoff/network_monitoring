@@ -78,9 +78,25 @@ object Proxy {
     fun announce(ctx: Context, on: Boolean): JSONObject? =
         call(ctx, "/proxy/etat", who(ctx).put("actif", on).put("dest", prefs(ctx).getString("proxy_dest", "") ?: ""))
 
+    // The same message can come twice: as an SMS broadcast AND as a notification
+    // of the Messages app. The first one wins, for 20 s.
+    private val recent = LinkedHashMap<String, Long>()
+
+    @Synchronized
+    private fun fresh(text: String): Boolean {
+        val now = System.currentTimeMillis()
+        recent.entries.removeAll { now - it.value > 20000 }
+        val key = text.trim()
+        if (recent.containsKey(key)) return false
+        recent[key] = now
+        return true
+    }
+
     /** Something that came through the SIM, handed to the bench. */
-    fun incoming(ctx: Context, from: String, text: String): Boolean =
-        call(ctx, "/proxy/entrant", who(ctx).put("de", from).put("texte", text))?.optBoolean("ok") == true
+    fun incoming(ctx: Context, from: String, text: String): Boolean {
+        if (text.isBlank() || !fresh(text)) return false
+        return call(ctx, "/proxy/entrant", who(ctx).put("de", from).put("texte", text))?.optBoolean("ok") == true
+    }
 
     fun sendSms(ctx: Context, to: String, text: String) {
         @Suppress("DEPRECATION")
@@ -105,6 +121,28 @@ class SmsReceiver : BroadcastReceiver() {
                 pending.finish()
             }
         }
+    }
+}
+
+/** RCS ("chat") messages never come as SMS: no app is told about them. But
+ *  the Messages app shows them in a notification, sender and text included -
+ *  with the notification access (granted by the user, once), they are
+ *  forwarded like the SMS. Only the messaging apps are read. */
+class MessagesListener : android.service.notification.NotificationListenerService() {
+    private val apps = setOf(
+        "com.google.android.apps.messaging", "com.android.mms", "com.samsung.android.messaging",
+        "com.coloros.mms", "com.oplus.mms", "com.android.messaging"
+    )
+
+    override fun onNotificationPosted(sbn: android.service.notification.StatusBarNotification?) {
+        if (sbn == null || sbn.packageName !in apps || !Proxy.enabled(this)) return
+        val n = sbn.notification ?: return
+        if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return      // the summary repeats the messages
+        val x = n.extras ?: return
+        val from = (x.getCharSequence(Notification.EXTRA_TITLE) ?: "").toString().trim()
+        val text = (x.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: x.getCharSequence(Notification.EXTRA_TEXT) ?: "").toString().trim()
+        if (from.isEmpty() || text.isEmpty()) return
+        thread { Proxy.incoming(applicationContext, from, text) }
     }
 }
 

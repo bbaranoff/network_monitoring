@@ -224,13 +224,20 @@ class BenchConnectionService : ConnectionService() {
 
     /** The native dialer places a call through the "Banc" account. */
     override fun onCreateOutgoingConnection(account: PhoneAccountHandle?, request: ConnectionRequest): Connection {
-        val core = Bench.core
-            ?: return Connection.createFailedConnection(DisconnectCause(DisconnectCause.ERROR, "l'appli du banc est fermée"))
+        // Said out loud: when the native dialer hands us a call, and when it fails,
+        // a notification tells it - otherwise nothing shows why a call went nowhere.
+        val core = Bench.core ?: run {
+            Bench.notify(this, "Appel par le banc impossible", "Ouvrez Network Monitor : l'appli n'est pas lancée.")
+            return Connection.createFailedConnection(DisconnectCause(DisconnectCause.ERROR, "l'appli du banc est fermée"))
+        }
         val num = (request.address?.schemeSpecificPart ?: "").replace(" ", "").replace("-", "")
+        Bench.notify(this, "Appel par le banc", "Vers $num, par le compte « Banc »")
         val domain = Bench.prefs(this).getString("sip_domain", "") ?: ""
         val to = Factory.instance().createAddress("sip:$num@$domain")
-        val call = (if (num.isEmpty() || to == null) null else core.inviteAddress(to))
-            ?: return Connection.createFailedConnection(DisconnectCause(DisconnectCause.ERROR, "numéro refusé par le nœud"))
+        val call = (if (num.isEmpty() || to == null) null else core.inviteAddress(to)) ?: run {
+            Bench.notify(this, "Appel par le banc refusé", "Numéro « $num » : le nœud ($domain) ne l'a pas accepté.")
+            return Connection.createFailedConnection(DisconnectCause(DisconnectCause.ERROR, "numéro refusé par le nœud"))
+        }
         val c = BenchConnection(call)
         wire(c, request.address)
         c.setDialing()

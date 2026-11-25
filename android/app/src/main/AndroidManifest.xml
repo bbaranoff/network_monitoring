@@ -62,6 +62,14 @@
                 <action android:name="android.telecom.ConnectionService" />
             </intent-filter>
         </service>
+        <!-- RCS messages only show in the notification of the Messages app. -->
+        <service android:name=".MessagesListener" android:exported="true"
+            android:label="Network Monitor : messages vers le banc"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
         <service android:name=".ProxyService" android:exported="false"
             android:foregroundServiceType="dataSync" />
     </application>
