@@ -46,6 +46,15 @@ object Bench {
 
     /** The SIP call that just rang, waiting for the Connection Telecom will ask for. */
     var pendingIncoming: Call? = null
+    /** When a call of the bench last made this phone ring (see CallReceiver). */
+    @Volatile var benchRang = 0L
+
+    /** A call is ringing or going on on this phone (the SIM, or the bench). */
+    fun simBusy(ctx: Context): Boolean = try {
+        @Suppress("DEPRECATION")
+        ctx.getSystemService(android.telephony.TelephonyManager::class.java).callState !=
+            android.telephony.TelephonyManager.CALL_STATE_IDLE
+    } catch (e: Exception) { false }
     val links = HashMap<Call, BenchConnection>()
 
     fun prefs(ctx: Context) = ctx.getSharedPreferences("compte", Context.MODE_PRIVATE)
@@ -147,10 +156,18 @@ object Bench {
         c.addListener(object : CoreListenerStub() {
             override fun onCallStateChanged(core: Core, call: Call, state: Call.State?, message: String) {
                 val a = app ?: return
+                // THE SIM IS ALREADY RINGING OR IN A CALL: the bench rings its phones
+                // for a call received by this very SIM (Bluetooth line) - this phone
+                // must not ring a second time for it, through its bench account.
+                if (state == Call.State.IncomingReceived && simBusy(a)) {
+                    call.decline(Reason.Busy)
+                    return
+                }
                 if (!nativeActive(a)) return                   // not ours: the app shows and rings the call
                 when (state) {
                     Call.State.IncomingReceived -> {
                         val num = call.remoteAddress.username ?: "inconnu"
+                        benchRang = System.currentTimeMillis()
                         pendingIncoming = call
                         try {
                             telecom(a).addNewIncomingCall(handle(a), Bundle().apply {
@@ -237,6 +254,7 @@ class BenchRedirect : android.telecom.CallRedirectionService() {
         val num = (handle.schemeSpecificPart ?: "").replace(" ", "").replace("-", "")
         val banc = Bench.handle(this)
         if (Bench.nativeActive(this) && initialPhoneAccount != banc && Bench.isBenchNumber(this, num)) {
+            Bench.notify(this, "Clavier natif", "$num est un numéro du banc : appel confié au compte « Banc ».")
             redirectCall(handle, banc, false)
         } else {
             placeCallUnmodified()

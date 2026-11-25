@@ -157,6 +157,7 @@ class CallReceiver : BroadcastReceiver() {
         // A call OF THE BENCH ringing here (account "Banc") also makes the phone
         // ring: it is not a call of the SIM, the bench must not be told about it.
         if (Bench.isBenchNumber(ctx, from.replace(" ", ""))) return
+        if (System.currentTimeMillis() - Bench.benchRang < 8000) return
         val pending = goAsync()
         thread {
             try {

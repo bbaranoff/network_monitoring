@@ -298,6 +298,7 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.tab_proxy).setOnClickListener { show("proxy") }
         findViewById<EditText>(R.id.proxy_dest).setText(prefs.getString("proxy_dest", "100101"))
         findViewById<Button>(R.id.btn_natif_on).setOnClickListener { natif(true) }
+        findViewById<Button>(R.id.btn_redirect).setOnClickListener { askRedirection(true) }
         findViewById<Button>(R.id.btn_natif_off).setOnClickListener { natif(false) }
         findViewById<Button>(R.id.btn_natif_comptes).setOnClickListener { openAccounts() }
         // the quick start: every setting of the first run, in order
@@ -396,6 +397,8 @@ class MainActivity : Activity() {
         super.onResume()
         if (tab == "proxy") { natifNote(); proxyNote() }    // back from a settings screen
         if (tab == "quick") quickNote()
+        // back from the calling-accounts screen with « Banc » enabled: the role, once
+        if (!roleAsked && Bench.nativeActive(this) && !Bench.redirects(this)) askRedirection()
         ui.post(poll)
     }
 
@@ -961,17 +964,31 @@ class MainActivity : Activity() {
 
     /** The role that lets the native keypad hand bench numbers to "Banc":
      *  Android asks the user once, in its own dialog. */
-    private fun askRedirection() {
+    private var roleAsked = false
+
+    private fun askRedirection(say: Boolean = false) {
         try {
-            val rm = getSystemService(android.app.role.RoleManager::class.java) ?: return
+            val rm = getSystemService(android.app.role.RoleManager::class.java)
             val role = android.app.role.RoleManager.ROLE_CALL_REDIRECTION
-            if (rm.isRoleAvailable(role) && !rm.isRoleHeld(role)) startActivityForResult(rm.createRequestRoleIntent(role), 5)
-        } catch (e: Exception) { }
+            when {
+                rm == null || !rm.isRoleAvailable(role) ->
+                    if (say) natifNote("Ce téléphone n'offre pas la redirection des appels : dans le clavier natif, choisissez le compte « Banc » à la main.")
+                rm.isRoleHeld(role) -> if (say) natifNote("La redirection est déjà accordée.")
+                else -> { roleAsked = true; startActivityForResult(rm.createRequestRoleIntent(role), 5) }
+            }
+        } catch (e: Exception) {
+            if (say) natifNote("Android a refusé la demande : ${e.message ?: e.javaClass.simpleName}. " +
+                "Paramètres > Applications > Applications par défaut > Redirection des appels : choisissez Network Monitor.")
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 5) natifNote()
+        if (requestCode == 5) {
+            natifNote(if (Bench.redirects(this)) "" else "Redirection non accordée. Paramètres > Applications > Applications par défaut > " +
+                "Redirection des appels (ou « Appli de transfert d'appel ») : choisissez Network Monitor.")
+            if (tab == "quick") quickNote()
+        }
     }
 
     private fun openAccounts() {
@@ -1013,8 +1030,9 @@ class MainActivity : Activity() {
             log("Proxy : appels et SMS du banc dans les applis du téléphone")
             // The one step Android reserves to the user: the switch of the account.
             // The app opens the screen itself; nothing else to look for.
-            if (!Bench.accountEnabled(this)) openAccounts()
-            askRedirection()
+            // One screen at a time: the account first; the role is asked when the
+            // user comes back with the account enabled (onResume).
+            if (!Bench.accountEnabled(this)) openAccounts() else askRedirection()
         } else {
             prefs.edit().putBoolean("natif", false).apply()
             Bench.unregister(this)
