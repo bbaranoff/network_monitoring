@@ -15,6 +15,27 @@ android {
         versionName "0.8"
     }
 
+    // UNE CLE DE SIGNATURE FIXE, quand elle est fournie (BANC_KEYSTORE, un PKCS#12
+    // d alias « banc »). Sans elle, chaque machine de compilation signe avec une
+    // cle de debug neuve : Android refuse alors la mise a jour (« package non
+    // valide ») et il faut desinstaller, donc se reinscrire. Voir android/cle-signature.sh.
+    signingConfigs {
+        banc {
+            if (System.getenv("BANC_KEYSTORE")) {
+                storeFile file(System.getenv("BANC_KEYSTORE"))
+                storePassword System.getenv("BANC_KEYSTORE_PASS")
+                keyAlias "banc"
+                keyPassword System.getenv("BANC_KEYSTORE_PASS")
+                storeType "pkcs12"
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            if (System.getenv("BANC_KEYSTORE")) signingConfig signingConfigs.banc
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17

@@ -22,7 +22,23 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
+      # The stable signing key, when the repository has it (android/cle-signature.sh):
+      # every APK then updates the previous one. Without the secrets the build
+      # still works, signed with the runner's throwaway debug key.
+      - name: Signing key
+        env:
+          KS: ${{ secrets.BANC_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/banc.p12"
+            echo "BANC_KEYSTORE=$RUNNER_TEMP/banc.p12" >> "$GITHUB_ENV"
+            echo "stable signing key in place"
+          else
+            echo "no BANC_KEYSTORE_B64 secret: throwaway debug key"
+          fi
       - name: Build
+        env:
+          BANC_KEYSTORE_PASS: ${{ secrets.BANC_KEYSTORE_PASS }}
         run: gradle -p android --no-daemon assembleDebug
       - uses: actions/upload-artifact@v4
         with:
