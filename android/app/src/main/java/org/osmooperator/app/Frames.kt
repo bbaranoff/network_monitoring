@@ -64,6 +64,7 @@ val CATEGORIES = listOf(
 )
 
 private val PREFIX = Regex("^(\\s*\\([^)]*\\))+\\s*")
+private val DTAP_TAIL = Regex("\\((?:DTAP|RR|GMM|SM)\\)\\s*(?:\\([^)]*\\)\\s*)*(\\S.*)$")
 
 class Frame(val d: JSONObject) {
     val num = d.optLong("frameNum", 0)
@@ -71,7 +72,8 @@ class Frame(val d: JSONObject) {
     val direction: String = d.optString("direction").ifEmpty {
         if (d.optBoolean("uplink", false)) "UL" else if (d.optString("arfcn").isNotEmpty()) "DL" else ""
     }
-    val info = d.optString("info")
+    // a space before a glued parenthesis: « N(S)=2(DTAP) » -> « N(S)=2 (DTAP) »
+    val info: String = Regex("(?<=[\\w=])\\((?=[A-Z]{2,5}\\))").replace(d.optString("info"), " (")
     val where: String
     val detail: String
     val kind: String
@@ -135,7 +137,8 @@ class Frame(val d: JSONObject) {
                 proto == "GSM_SMS" || l3.startsWith("SMS") -> "sms"
                 d.optString("cc").isNotEmpty() -> "cc"
                 l3.startsWith("MM") -> "mm"
-                chan == "BCCH" || chan == "CCCH" || "system information" in info || "paging request" in info -> "bcch"
+                chan in setOf("BCCH", "CCCH", "PCH", "AGCH", "CBCH51", "CBCH52") ||
+                    "system information" in info || "paging request" in info -> "bcch"
                 l3.startsWith("RR") -> "rr"
                 proto == "LAPDm" -> "lapdm"
                 proto in setOf("S1AP", "M3UA", "SCTP", "DIAMETER", "GTPv2", "GTP", "SCCP", "BSSAP", "BSSMAP") ||
@@ -149,6 +152,9 @@ class Frame(val d: JSONObject) {
         fun titleOf(info: String, rr: String, cc: String, proto: String): String {
             if (info.lowercase().startsWith("mon:")) return "Mesure de cellule"
             var t = PREFIX.replace(info, "").trim()
+            // LAPDm: tshark glues the header and the message (« I, N(R)=1, N(S)=2 (DTAP) (CC) Connect »);
+            // the title is the message, the LAPDm header is already in the detail.
+            DTAP_TAIL.find(t)?.let { t = it.groupValues[1].trim() }
             if ((t.isEmpty() || t.startsWith("RR 0x")) && rr.isNotEmpty() && !rr.startsWith("RR 0x")) t = rr
             if (t.isEmpty() && cc.isNotEmpty()) t = cc
             if (t.length > 48 && ", " in t) t = t.substringBefore(", ")

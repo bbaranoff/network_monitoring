@@ -69,6 +69,7 @@ import java.security.MessageDigest
 import org.json.JSONArray
 import org.json.JSONObject
 import org.linphone.core.Account
+import org.linphone.core.AudioDevice
 import org.linphone.core.Call
 import org.linphone.core.ChatMessage
 import org.linphone.core.ChatRoom
@@ -133,6 +134,7 @@ class MainActivity : Activity() {
     private val framesPending = ArrayList<Frame>()
     private var framesNote = ""
     private var callSince = 0L
+    private var speakerOn = false
     private var dark = false
     private val catButtons = HashMap<String, Button>()
     private var psdBusy = false
@@ -264,6 +266,11 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btn_call).setOnClickListener { call() }
         btnAnswer.setOnClickListener { (core.currentCall ?: core.calls.firstOrNull())?.accept() }
         btnHangup.setOnClickListener { core.calls.forEach { it.terminate() } }
+        findViewById<Button>(R.id.btn_mute).setOnClickListener {
+            core.isMicEnabled = !core.isMicEnabled
+            (it as Button).text = if (core.isMicEnabled) "Micro" else "Micro coupé"
+        }
+        findViewById<Button>(R.id.btn_spk).setOnClickListener { speaker(!speakerOn); (it as Button).text = if (speakerOn) "Haut-parleur ✓" else "Haut-parleur" }
         findViewById<Button>(R.id.msg_send).setOnClickListener { sendSms() }
         findViewById<Button>(R.id.msg_wipe).setOnClickListener { wipe() }
         findViewById<Button>(R.id.btn_wipe).setOnClickListener { wipe() }
@@ -366,7 +373,20 @@ class MainActivity : Activity() {
         callCard.visibility = if (busy) View.VISIBLE else View.GONE
         number.visibility = if (busy) View.GONE else View.VISIBLE
         findViewById<View>(R.id.btn_call).visibility = if (busy) View.GONE else View.VISIBLE
-        if (busy) { callPeer.text = peer; callInfo.text = info } else callSince = 0L
+        if (busy) { callPeer.text = peer; callInfo.text = info } else {
+            callSince = 0L
+            core.isMicEnabled = true                      // the microphone back, the speaker off
+            speakerOn = false
+            findViewById<Button>(R.id.btn_mute).text = "Micro"
+            findViewById<Button>(R.id.btn_spk).text = "Haut-parleur"
+        }
+    }
+
+    /** The loudspeaker or the earpiece, for the call in progress. */
+    private fun speaker(on: Boolean) {
+        val want = if (on) AudioDevice.Type.Speaker else AudioDevice.Type.Earpiece
+        val dev = core.audioDevices.firstOrNull { it.type == want && it.hasCapability(AudioDevice.Capabilities.CapabilityPlay) }
+        if (dev != null) { core.currentCall?.outputAudioDevice = dev; speakerOn = on }
     }
 
     /** Calls and conversations, erased: bubbles, journals, the typed number. */
@@ -560,7 +580,9 @@ class MainActivity : Activity() {
     private fun showEtat(d: JSONObject?, err: String?) {
         val procs = d?.optJSONArray("procs")
         if (procs == null) {
-            services.text = "Services indisponibles : osmo-reglages ne répond pas sur le port 8090 (${why(d, err)})"
+            services.text = "Le service de réglages du nœud (osmo-reglages, port 8090) ne répond pas.\n" +
+                "Les services et la console VTY passent par lui."
+            findViewById<View>(R.id.btn_vty).isEnabled = false
             return
         }
         val sb = StringBuilder("Services du nœud (${procs.length()})\n\n")
@@ -570,6 +592,7 @@ class MainActivity : Activity() {
             sb.append("● %-16s %5s %%  %4d Mo  %d min\n".format(name, p.optString("cpu"), p.optInt("rss"), p.optInt("age") / 60))
         }
         services.text = sb.toString()
+        findViewById<View>(R.id.btn_vty).isEnabled = true
         val v = d.optJSONArray("vty") ?: JSONArray()
         if (v.toString() != vty.toString()) {
             vty = v
@@ -609,7 +632,7 @@ class MainActivity : Activity() {
         val body = if (choice == null) null else JSONObject().put("trunk", choice)
         bg({ http("http://$h:8090/api/trunk", body) }) { d, err ->
             val t = d?.optString("trunk")?.takeIf { it.isNotEmpty() }
-            trunkState.text = "Sortie vers l'extérieur : ${t ?: "indisponible (${why(d, err)})"}"
+            trunkState.text = "Sortie vers l'extérieur : ${t ?: "indisponible, le service de réglages du nœud ne répond pas"}"
         }
     }
 

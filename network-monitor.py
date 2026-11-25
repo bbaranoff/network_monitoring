@@ -754,7 +754,8 @@ class FrameItem(GObject.Object):
         if d.get("opLabel") and d["opLabel"] != "—" and "NaN" not in d["opLabel"]:
             where.append(d["opLabel"])          # « ANaN » : le dashboard n avait pas d ARFCN
         self.where = "  ".join(where)
-        self.info = d.get("info") or ""
+        # une espace avant une parenthèse collée : « N(S)=2(DTAP) » -> « N(S)=2 (DTAP) »
+        self.info = re.sub(r"(?<=[\w=])\((?=[A-Z]{2,5}\))", " (", d.get("info") or "")
         rr = d.get("rr") or ""
         if rr.startswith("RR 0x"):
             try:
@@ -797,6 +798,11 @@ def frame_title(d, info, rr):
     if info.lower().startswith("mon:"):
         return "Mesure de cellule"
     t = re.sub(r"^(\s*\([^)]*\))+\s*", "", info).strip()
+    # LAPDm : tshark colle l en-tête et le message (« I, N(R)=1, N(S)=2(DTAP) (CC) Connect ») ;
+    # le titre est le message, l en-tête LAPDm est déjà dans le détail (l2).
+    m = re.search(r"\((?:DTAP|RR|GMM|SM)\)\s*(?:\([^)]*\)\s*)*(\S.*)$", t)
+    if m:
+        t = m.group(1).strip()
     if (not t or t.startswith("RR 0x")) and rr and not rr.startswith("RR 0x"):
         t = rr
     if d.get("cc") and not t:
@@ -829,7 +835,8 @@ def frame_kind(d, proto, l3):
     if l3.startswith("MM"):
         return "mm"
     chan = d.get("channel") or ""
-    if chan in ("BCCH", "CCCH") or "system information" in info or "paging request" in info:
+    if chan in ("BCCH", "CCCH", "PCH", "AGCH", "CBCH51", "CBCH52") or "system information" in info \
+            or "paging request" in info:
         return "bcch"
     if l3.startswith("RR"):
         return "rr"
@@ -1245,6 +1252,21 @@ class PjSip:
         if self.call is not None:
             self.call.hangup(pj.CallOpParam())
 
+    def mute(self, on):
+        """Le micro coupé : niveau du périphérique de capture à zéro (remis à la fin de l appel)."""
+        try:
+            pj.Endpoint.instance().audDevManager().getCaptureDevMedia().adjustRxLevel(0.0 if on else 1.0)
+        except pj.Error:
+            pass
+
+    def dtmf(self, digit):
+        """Une touche pendant l appel (RFC 2833) : serveur vocal, code d accès."""
+        if self.call is not None:
+            try:
+                self.call.dialDtmf(digit)
+            except pj.Error:
+                pass
+
     def send(self, num, text):
         if self.acc is None:
             raise RuntimeError("pas de compte sur un nœud")
@@ -1292,6 +1314,12 @@ class DemoSip:
     def hangup(self):
         self.in_call = False
         self.on_call("ended", "")
+
+    def mute(self, on):
+        pass
+
+    def dtmf(self, digit):
+        pass
 
     def send(self, num, text):
         GLib.timeout_add(900, lambda: self.on_message(num, "reçu : " + text) and False)
@@ -1351,8 +1379,14 @@ class Spectrum(Gtk.DrawingArea):
         cols = [max(psd[i * n // self.W:max(i * n // self.W + 1, (i + 1) * n // self.W)]) for i in range(self.W)]
         s = sorted(cols)
         lo, hi = s[len(s) // 10] - 4, s[-1] + 4             # plancher de bruit et crête, lissés
-        self.lo += (lo - self.lo) * 0.15
-        self.hi += (max(hi, lo + 20) - self.hi) * 0.15
+        # ATTAQUE IMMÉDIATE, RETOUR LENT. Lissée dans les deux sens, l échelle
+        # traînait derrière une salve (le montant, par rafales) : trace écrêtée
+        # en plateau et étiquette du pic (36 dB) hors de l axe (-1 dB). Le haut
+        # suit la crête dès qu elle le dépasse, le bas dès qu il descend ; ils
+        # ne reviennent que lentement.
+        hi = max(hi, lo + 20)
+        self.hi = hi if hi > self.hi else self.hi + (hi - self.hi) * 0.05
+        self.lo = lo if lo < self.lo else self.lo + (lo - self.lo) * 0.05
         rng = max(1.0, self.hi - self.lo)
         self.trace = [max(0.0, min(1.0, (v - self.lo) / rng)) for v in cols]
         self.peak_hold = [max(a * 0.985, b) for a, b in zip(self.peak_hold or self.trace, self.trace)]
@@ -1692,7 +1726,7 @@ class NodeUi:
         self.call_card.append(self.call_info)
         box.append(self.call_card)
         self.number = Gtk.Entry(css_classes=["dial-entry"], xalign=0.5, vexpand=True, valign=Gtk.Align.CENTER,
-                                placeholder_text="Numéro", input_purpose=Gtk.InputPurpose.PHONE)
+                                input_purpose=Gtk.InputPurpose.PHONE)     # pas d invite : le curseur la chevauchait
         self.number.connect("activate", lambda *_: self.on_dial())
         box.append(self.number)
         grid = Gtk.Grid(row_spacing=10, column_spacing=22, halign=Gtk.Align.CENTER)
@@ -1706,6 +1740,20 @@ class NodeUi:
             grid.attach(key, i % 3, i // 3, 1, 1)
         box.append(grid)
         self.dial_grid = grid
+        # Pendant l appel : micro coupé, clavier (DTMF), haut-parleur.
+        self.call_tools = Gtk.Box(spacing=18, halign=Gtk.Align.CENTER, visible=False)
+        self.t_mute = Gtk.ToggleButton(icon_name="microphone-sensitivity-muted-symbolic", css_classes=["call-tool"],
+                                       tooltip_text="Couper le micro")
+        self.t_keys = Gtk.ToggleButton(icon_name="input-dialpad-symbolic", css_classes=["call-tool"],
+                                       tooltip_text="Clavier (touches DTMF)")
+        self.t_spk = Gtk.ToggleButton(icon_name="audio-speakers-symbolic", css_classes=["call-tool"],
+                                      tooltip_text="Haut-parleur")
+        self.t_mute.connect("toggled", lambda b: self.sip.mute(b.get_active()))
+        self.t_keys.connect("toggled", lambda b: self._call_keys(b.get_active()))
+        self.t_spk.connect("toggled", lambda b: self._speaker(b.get_active()))
+        for b in (self.t_mute, self.t_keys, self.t_spk):
+            self.call_tools.append(b)
+        box.append(self.call_tools)
         row = Gtk.Box(spacing=22, halign=Gtk.Align.CENTER, margin_top=8)
 
         def round_btn(icon, classes, tip, cb, visible=True):
@@ -1782,8 +1830,31 @@ class NodeUi:
         self.phone_stack.set_visible_child_name("join")
 
     def _key(self, d):
+        if self.call_state is not None:             # en appel, une touche est un DTMF
+            self.sip.dtmf(d)
+            self.call_info.set_text("%s  ·  %s" % (CALL_TEXT.get(self.call_state, ""), d))
+            return
         self.number.set_text(self.number.get_text() + d)
         self.number.set_position(-1)
+
+    def _call_keys(self, on):
+        """Le clavier en appel : la carte se resserre pour que tout tienne à l écran."""
+        busy = self.call_state is not None
+        self.dial_grid.set_visible(on or not busy)
+        self.call_icon.set_visible(not (on and busy))
+        (self.call_card.add_css_class if on and busy else self.call_card.remove_css_class)("compact")
+        (self.dial_grid.add_css_class if on and busy else self.dial_grid.remove_css_class)("in-call")
+        self.call_card.set_vexpand(not (on and busy))
+
+    def _speaker(self, on):
+        """Le haut-parleur : c est callaudiod qui route le son sur postmarketOS
+        (comme pour Calls). Absent (bureau, banc) : sans effet, sans erreur."""
+        try:
+            Gio.bus_get_sync(Gio.BusType.SESSION, None).call(
+                "org.mobian_project.CallAudio", "/org/mobian_project/CallAudio", "org.mobian_project.CallAudio",
+                "EnableSpeaker", GLib.Variant("(b)", (on,)), None, Gio.DBusCallFlags.NONE, 2000, None, None)
+        except GLib.Error:
+            pass
 
     def on_dial(self):
         num = self.number.get_text().replace(" ", "")
@@ -1804,11 +1875,12 @@ class NodeUi:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.m_to = Adw.EntryRow(title="À (numéro)", input_purpose=Gtk.InputPurpose.PHONE)
         top = Adw.PreferencesGroup(margin_top=12, margin_start=12, margin_end=12)
-        wipe = Gtk.Button(icon_name="user-trash-symbolic", css_classes=["flat"], valign=Gtk.Align.CENTER,
-                          tooltip_text="Effacer les appels et conversations")
-        wipe.connect("clicked", lambda *_: self.on_wipe())
-        self.m_to.add_suffix(wipe)
         top.add(self.m_to)
+        # En toutes lettres, hors du champ : une corbeille dans « À (numéro) »
+        # se lisait « effacer le numéro ».
+        wipe = Gtk.Button(label="Effacer la conversation", css_classes=["flat", "caption"], halign=Gtk.Align.END)
+        wipe.connect("clicked", lambda *_: self.on_wipe())
+        top.set_header_suffix(wipe)
         box.append(top)
         self.m_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12, margin_bottom=12,
                               margin_start=12, margin_end=12, valign=Gtk.Align.END)
@@ -1896,10 +1968,12 @@ class NodeUi:
         # more than a phone (360) - the whole window overflowed in Expert, and in
         # Basique too (the hidden tab still counts in the window's width).
         quick = Gtk.Box(spacing=6)
+        self.n_console_widgets = []
         for label, cmd in (("abonnés", "show subscriber all"), ("stats", "show stats"), ("version", "show version")):
             b = Gtk.Button(label=label, hexpand=True)
             b.connect("clicked", lambda _b, c=cmd: self.on_vty(c))
             quick.append(b)
+            self.n_console_widgets.append(b)
         v.append(quick)
         bar = Gtk.Box(spacing=8)
         self.n_cmd = Gtk.Entry(hexpand=True, placeholder_text="commande VTY (show …)", css_classes=["monospace"])
@@ -1908,6 +1982,8 @@ class NodeUi:
         go.connect("clicked", lambda *_: self.on_vty(self.n_cmd.get_text()))
         bar.append(self.n_cmd); bar.append(go)
         v.append(bar)
+        self.n_console_widgets += [self.n_vty_sel, self.n_cmd, go]
+        self._console_ready(False)                  # jusqu à la première réponse du nœud
         self.node_swiper.add("console", "Console VTY", v)
         self.node_busy = False
         self.node_etat_at = 0
@@ -1944,10 +2020,13 @@ class NodeUi:
             self.n_procs.remove(r)
         self.n_proc_rows = []
         if err or not d or "procs" not in d:
-            # échappé : « <urlopen error …> » serait lu comme du balisage Pango
             self.n_procs.set_description(GLib.markup_escape_text(
-                "Services indisponibles : osmo-reglages ne répond pas sur le port %d (%s)" % (PORT_API, err or d)))
+                "Le service de réglages du nœud (osmo-reglages, port %d) ne répond pas. "
+                "Les services et la console VTY passent par lui." % PORT_API))
+            self.n_procs.set_tooltip_text(str(err or d))          # le détail technique, au survol
+            self._console_ready(False)
             return
+        self.n_procs.set_tooltip_text(None)
         self.n_procs.set_description("%d processus · %s" % (len(d["procs"]), self.node.host))
         for p in d["procs"]:
             name = os.path.basename(p["cmd"].split()[0])
@@ -1966,6 +2045,15 @@ class NodeUi:
             self.n_vty = vty
             self.n_vty_sel.set_model(Gtk.StringList.new(
                 ["%s  (%s:%d)" % (x.get("invite") or x["nom"], x["hote"], x["port"]) for x in vty] or ["(aucun démon)"]))
+        self._console_ready(bool(vty))
+
+    def _console_ready(self, ok):
+        """Sans démon VTY, rien à interroger : commandes et raccourcis grisés."""
+        if not ok:
+            self.n_vty = []
+            self.n_vty_sel.set_model(Gtk.StringList.new(["(aucun démon)"]))
+        for w in self.n_console_widgets:
+            w.set_sensitive(ok)
 
     def on_vty(self, cmd):
         cmd = cmd.strip()
@@ -1994,7 +2082,7 @@ class NodeUi:
         self.a_node = Adw.EntryRow(title="Adresse du nœud", show_apply_button=True)
         self.a_node.connect("apply", lambda r: self.set_node(node_host(r.get_text()), announce=True))
         grp.add(self.a_node)
-        self.a_trunk = Adw.ComboRow(title="Sortie vers l'extérieur", subtitle="appels vers les numéros publics",
+        self.a_trunk = Adw.ComboRow(title="Sortie", subtitle="appels vers l'extérieur",          # titre court : « Zadarma » était tronqué
                                     model=Gtk.StringList.new(list(TRUNKS.values())), sensitive=False)
         self.a_trunk_quiet = True
         self.a_trunk.connect("notify::selected", self.on_trunk)
@@ -2031,8 +2119,8 @@ class NodeUi:
     def _trunk_shown(self, d, err):
         ok = bool(d) and d.get("trunk") in TRUNKS
         self.a_trunk.set_sensitive(ok)
-        self.a_trunk.set_subtitle("appels vers les numéros publics" if ok else
-                                  "indisponible : %s" % (err or (d or {}).get("err") or "le nœud ne répond pas"))
+        self.a_trunk.set_subtitle("appels vers l'extérieur" if ok else "indisponible : le service de réglages ne répond pas")
+        self.a_trunk.set_tooltip_text(None if ok else str(err or (d or {}).get("err") or ""))
         if ok:
             self.a_trunk_quiet = True
             self.a_trunk.set_selected(list(TRUNKS).index(d["trunk"]))
@@ -2123,6 +2211,14 @@ class NodeUi:
         # décrocher / raccrocher dessous. (Il débordait de l écran et décentrait tout.)
         for w in (self.number, self.dial_grid) + tuple(self.dial_side):
             w.set_visible(not busy)
+        # Les bascules de l appel : visibles une fois décroché ou en train d appeler,
+        # remises à zéro à la fin (micro rouvert, haut-parleur coupé).
+        self.call_tools.set_visible(busy and state != "incoming")
+        self._call_keys(busy and self.t_keys.get_active())
+        if not busy:
+            for t in (self.t_mute, self.t_keys, self.t_spk):
+                if t.get_active():
+                    t.set_active(False)
         for c in ("live", "ring"):
             self.call_card.remove_css_class(c)
         if busy:
@@ -2209,8 +2305,13 @@ CSS = b"""
 .dial-key { font-size: 26px; min-width: 76px; min-height: 76px; border-radius: 38px; }
 .dial-key .sub { font-size: 10px; font-weight: 700; opacity: 0.55; letter-spacing: 2px; }
 .call-btn { min-width: 68px; min-height: 68px; border-radius: 34px; }
+.call-tool { min-width: 52px; min-height: 52px; border-radius: 26px; }
 .call-btn.go { background-color: @success_bg_color; color: @success_fg_color; }
 .call-card { padding: 28px 18px; border-radius: 24px; }
+.call-card.compact { padding: 6px 18px; }
+.call-card.compact .call-peer { font-size: 22px; }
+.in-call .dial-key { font-size: 21px; min-width: 60px; min-height: 52px; border-radius: 26px; }
+.in-call .dial-key .sub { font-size: 0; }
 .call-card .call-peer { font-size: 30px; font-weight: 800; }
 .call-card .call-info { font-size: 15px; opacity: 0.8; }
 .call-card.ring .call-icon { color: @success_color; }
@@ -2711,6 +2812,10 @@ class Window(NodeUi, Adw.ApplicationWindow):
         r["arfcn"].set(str(s["arfcn"]) if s["arfcn"] is not None else "")
         r["earfcn"].set(str(s["earfcn"]) if s["earfcn"] is not None else "")
         r["pci"].set(str(s["pci"]) if s["pci"] is not None else "")
+        # Une ligne sans objet dans la techno courante ne s affiche pas : « LAC — »
+        # en LTE (c est le TAC qui compte), « TAC — » en 2G.
+        for k in ("lac", "tac", "enb", "arfcn", "earfcn", "pci"):
+            r[k].set_visible(r[k].value.get_text() != "—")
         for k in ("bands", "rat_list", "reg_cs", "reg_eps", "packet", "state", "firmware", "driver",
                   "imei", "imsi", "sim_op", "number"):
             r[k].set(s[k])

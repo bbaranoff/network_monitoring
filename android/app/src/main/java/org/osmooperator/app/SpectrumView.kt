@@ -83,8 +83,11 @@ class SpectrumView(context: Context, attrs: AttributeSet?) : View(context, attrs
         val sorted = c.sortedArray()
         val floor = sorted[cols / 10] - 4
         val top = sorted[cols - 1] + 4
-        lo += (floor - lo) * 0.15
-        hi += (max(top, floor + 20) - hi) * 0.15
+        // IMMEDIATE ATTACK, SLOW RELEASE: smoothed both ways, the scale lagged
+        // behind a burst (uplink) - clipped trace, peak label off the axis.
+        val t2 = max(top, floor + 20)
+        hi = if (t2 > hi) t2 else hi + (t2 - hi) * 0.05
+        lo = if (floor < lo) floor else lo + (floor - lo) * 0.05
         val range = max(1.0, hi - lo)
         trace = FloatArray(cols) { i -> ((c[i] - lo) / range).coerceIn(0.0, 1.0).toFloat() }
         hold = if (hold.size == cols) FloatArray(cols) { i -> max(hold[i] * 0.985f, trace[i]) } else trace.copyOf()
