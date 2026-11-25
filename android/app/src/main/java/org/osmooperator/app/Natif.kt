@@ -56,6 +56,20 @@ object Bench {
      *  ignores an incoming call on a disabled account, it would ring nowhere. */
     fun nativeActive(ctx: Context) = native(ctx) && accountEnabled(ctx)
 
+    /** The numbers of the bench, as typed in the native keypad: the enrolled
+     *  phones (3000-3999), the GSM mobiles (1001xx), the service numbers
+     *  (100, 200, 500, 600, 700). "numeros_banc" in the preferences to change it. */
+    fun isBenchNumber(ctx: Context, num: String): Boolean {
+        val pattern = prefs(ctx).getString("numeros_banc", null) ?: "3\\d{3}|1001\\d{2}|[1-7]00"
+        return try { Regex(pattern).matches(num) } catch (e: Exception) { false }
+    }
+
+    /** True when the app holds the call-redirection role (asked at activation). */
+    fun redirects(ctx: Context): Boolean = try {
+        val rm = ctx.getSystemService(android.app.role.RoleManager::class.java)
+        rm != null && rm.isRoleHeld(android.app.role.RoleManager.ROLE_CALL_REDIRECTION)
+    } catch (e: Exception) { false }
+
     // ── Ringing in this app (no native UI for the call) ─────────────────────
     private var ringtone: android.media.Ringtone? = null
 
@@ -198,6 +212,23 @@ class BenchConnection(private val call: Call?) : Connection() {
     override fun onPlayDtmfTone(c: Char) { call?.sendDtmf(c) }
     override fun onHold() { call?.pause(); setOnHold() }
     override fun onUnhold() { call?.resume(); setActive() }
+}
+
+/** THE NATIVE KEYPAD AND THE BENCH. Without it, a bench number typed in the
+ *  normal dialer leaves by the SIM (or asks which account to use). With the
+ *  call-redirection role, Telecom shows us every outgoing number first: a
+ *  number of the bench is handed to the "Banc" account, everything else goes
+ *  on untouched. (Emergency numbers never come here: Telecom keeps them.) */
+class BenchRedirect : android.telecom.CallRedirectionService() {
+    override fun onPlaceCall(handle: Uri, initialPhoneAccount: PhoneAccountHandle, allowInteractiveResponse: Boolean) {
+        val num = (handle.schemeSpecificPart ?: "").replace(" ", "").replace("-", "")
+        val banc = Bench.handle(this)
+        if (Bench.nativeActive(this) && initialPhoneAccount != banc && Bench.isBenchNumber(this, num)) {
+            redirectCall(handle, banc, false)
+        } else {
+            placeCallUnmodified()
+        }
+    }
 }
 
 class BenchConnectionService : ConnectionService() {

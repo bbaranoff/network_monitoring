@@ -890,11 +890,29 @@ class MainActivity : Activity() {
         val on = Bench.native(this)
         findViewById<TextView>(R.id.natif_state).text = (if (extra.isEmpty()) "" else "$extra\n") + when {
             !on -> "Proxy inactif : appels et SMS du banc s'affichent dans cette appli."
-            Bench.accountEnabled(this) -> "Proxy ACTIF : le compte « Banc » est activé dans l'appli Téléphone."
+            Bench.accountEnabled(this) -> "Proxy ACTIF : le compte « Banc » est activé dans l'appli Téléphone.\n" +
+                (if (Bench.redirects(this)) "Clavier natif : un numéro du banc (3006, 100101, 600…) part tout seul par « Banc »."
+                else "Clavier natif : l'appli n'a pas le rôle de redirection des appels ; un numéro du banc partirait " +
+                    "par la SIM. Touchez Activer de nouveau et acceptez la demande d'Android.")
             else -> "Proxy demandé, mais le compte « Banc » n'est PAS activé dans l'appli Téléphone : en attendant, " +
                 "les appels sonnent dans cette appli. Touchez « Comptes téléphoniques » et activez « Banc » ; " +
                 "si ce compte n'y figure pas, ce téléphone ne permet pas les comptes d'appel tiers."
         }
+    }
+
+    /** The role that lets the native keypad hand bench numbers to "Banc":
+     *  Android asks the user once, in its own dialog. */
+    private fun askRedirection() {
+        try {
+            val rm = getSystemService(android.app.role.RoleManager::class.java) ?: return
+            val role = android.app.role.RoleManager.ROLE_CALL_REDIRECTION
+            if (rm.isRoleAvailable(role) && !rm.isRoleHeld(role)) startActivityForResult(rm.createRequestRoleIntent(role), 5)
+        } catch (e: Exception) { }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 5) natifNote()
     }
 
     private fun openAccounts() {
@@ -936,6 +954,7 @@ class MainActivity : Activity() {
             // The one step Android reserves to the user: the switch of the account.
             // The app opens the screen itself; nothing else to look for.
             if (!Bench.accountEnabled(this)) openAccounts()
+            askRedirection()
         } else {
             prefs.edit().putBoolean("natif", false).apply()
             Bench.unregister(this)
