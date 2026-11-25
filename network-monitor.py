@@ -39,8 +39,14 @@ import json
 import math
 import os
 import random
+import re
 import sys
+import threading
 import time
+import urllib.error
+import urllib.request
+
+import cairo
 
 import gi
 
@@ -56,6 +62,10 @@ try:
 except (ValueError, ImportError):
     MM = None
 try:
+    import pjsua2 as pj                             # pile SIP du téléphone (paquet py3-pjsua)
+except ImportError:
+    pj = None
+try:
     gi.require_version("Soup", "3.0")
     from gi.repository import Soup  # noqa: E402   (client WebSocket, paquet libsoup3)
 except (ValueError, ImportError):
@@ -67,7 +77,7 @@ LOC_3GPP_LAC_CI = 1 << 0       # MM_MODEM_LOCATION_SOURCE_3GPP_LAC_CI (1 << 1 se
 ACT_5GNR = 1 << 15             # MM_MODEM_ACCESS_TECHNOLOGY_5GNR
 
 APP_ID = "org.osmocom.NetworkMonitor"
-VERSION = "0.2"
+VERSION = "0.3"
 HISTORY_S = 600          # 10 min d historique par mesure
 POLL_S = 2               # cadence de lecture
 FRAMES_MAX = 2000        # trames gardees a l ecran
@@ -843,7 +853,10 @@ class Graph(Gtk.DrawingArea):
             first = False
         cr.stroke()
         # aire sous la courbe
-        cr.set_source_rgba(0.208, 0.518, 0.894, 0.15)
+        grad = cairo.LinearGradient(0, pad_t, 0, pad_t + gh)
+        grad.add_color_stop_rgba(0, 0.208, 0.518, 0.894, 0.45)
+        grad.add_color_stop_rgba(1, 0.208, 0.518, 0.894, 0.0)
+        cr.set_source(grad)
         first = True
         for t, v in pts:
             x = pad_l + gw * (1 - (now - t) / HISTORY_S)
@@ -897,6 +910,1071 @@ class InfoRow(Adw.ActionRow):
         self.value.set_text(text if text not in (None, "") else "—")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# LE NŒUD ET LE TÉLÉPHONE (0.3)
+#
+# L appli n est plus seulement un moniteur : avec l adresse d un nœud
+# osmo-operator (IP locale, adresse WireGuard ou VPS), elle devient un poste
+# du réseau. Tout part d UNE adresse, saisie une fois (page Compte) :
+#
+#   http://<nœud>:8081/psd?src=bts|ms   le spectre I/Q du banc (fft-web)
+#   http://<nœud>:8090/api/etat         les processus et les VTY (osmo-reglages)
+#   http://<nœud>:8090/api/console      une commande VTY
+#   ws://<nœud>:8080/                   les trames (tableau de bord)
+#   http://<nœud>:8088/inscription      code d invitation -> compte SIP
+#   sip:<nœud>:5060                     appels et SMS (SIP MESSAGE), pjsua2
+#
+# Rien de tout cela n est authentifié côté nœud (la console VTY exécute ce
+# qu on lui donne) : réseau local ou WireGuard, jamais l Internet ouvert.
+# osmo-reglages écoute sur 127.0.0.1 par défaut : --bind <adresse du nœud>.
+# ═══════════════════════════════════════════════════════════════════════════
+PORT_FFT = int(os.environ.get("NETMON_FFT_PORT", "8081"))
+PORT_API = int(os.environ.get("NETMON_API_PORT", "8090"))
+PORT_WS = int(os.environ.get("NETMON_WS_PORT", "8080"))
+PORT_JOIN = int(os.environ.get("NETMON_JOIN_PORT", "8088"))
+SETTINGS = os.path.join(GLib.get_user_config_dir(), "network-monitor", "reglages.json")
+
+
+def load_settings():
+    try:
+        with open(SETTINGS) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(s):
+    os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+    fd = os.open(SETTINGS, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)   # contient un mot de passe SIP
+    with os.fdopen(fd, "w") as f:
+        json.dump(s, f)
+
+
+def node_host(text):
+    """'http://192.168.1.20:8080/x' -> '192.168.1.20'."""
+    t = re.sub(r"^[a-z]+://", "", (text or "").strip())
+    return t.split("/")[0].split(":")[0]
+
+
+def peer_of(uri):
+    """'"Bob" <sip:100102@host;x=y>' -> '100102'."""
+    m = re.search(r"sips?:([^@>;]+)", uri or "")
+    return m.group(1) if m else (uri or "?")
+
+
+def http_json(url, data=None, timeout=4):
+    req = urllib.request.Request(url, method="POST" if data is not None else "GET",
+                                 data=json.dumps(data).encode() if data is not None else None,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read().decode())
+        except ValueError:
+            return {"error": "HTTP %d" % e.code, "err": "HTTP %d" % e.code}
+
+
+class NodeClient:
+    def __init__(self, host):
+        self.host = host
+
+    def psd(self, src):
+        return http_json("http://%s:%d/psd?src=%s" % (self.host, PORT_FFT, src), timeout=3)
+
+    def etat(self):
+        return http_json("http://%s:%d/api/etat" % (self.host, PORT_API))
+
+    def console(self, hote, port, ligne):
+        return http_json("http://%s:%d/api/console" % (self.host, PORT_API),
+                         {"hote": hote, "port": port, "lignes": [ligne]}, timeout=10)
+
+    def trunk(self, choice=None):
+        """La sortie vers le réseau public : lue (None) ou choisie."""
+        return http_json("http://%s:%d/api/trunk" % (self.host, PORT_API),
+                         None if choice is None else {"trunk": choice})
+
+    def enrol(self, pseudo, code):
+        j = http_json("http://%s:%d/inscription" % (self.host, PORT_JOIN),
+                      {"code": code, "pseudo": pseudo}, timeout=10)
+        if not j.get("ok"):
+            raise RuntimeError(j.get("error") or "refus sans motif")
+        return {"msisdn": j.get("msisdn") or j["sip_user"], "sip_user": j["sip_user"],
+                "sip_password": j["sip_password"], "sip_domain": j.get("sip_domain") or self.host,
+                "sip_port": int(j.get("sip_port") or 5060), "sip_transport": j.get("sip_transport") or "udp"}
+
+
+class DemoNode:
+    """Un nœud simulé : un porteur GSM qui respire, quatre démons."""
+    host = "démo"
+
+    def __init__(self, host=None):
+        self.t0 = time.time()
+
+    def psd(self, src):
+        t = time.time() - self.t0
+        off = 67.7 if src == "bts" else -67.7           # la tonalité FCCH, à ±67,7 kHz
+        burst = 1.0 if src == "bts" else (0.5 + 0.5 * math.sin(t * 1.3) > 0.35)
+        freqs, psd = [], []
+        for i in range(512):
+            f = -541.0 + 1082.0 * i / 511
+            carrier = 38.0 * math.exp(-(f / 115.0) ** 4) * burst
+            tone = 14.0 * math.exp(-((f - off) / 6.0) ** 2) * (0.5 + 0.5 * math.sin(t * 0.7))
+            freqs.append(round(f, 1))
+            psd.append(round(-96 + carrier + tone + random.uniform(-3, 3), 2))
+        return {"label": "BTS (descendant)" if src == "bts" else "MS (montant)",
+                "arfcn": 514, "rate": 1083333, "freqs": freqs, "psd": psd}
+
+    def etat(self):
+        age = int(time.time() - self.t0) + 4000
+        return {"procs": [{"pid": str(1200 + i), "age": age - 3 * i, "rss": rss, "cpu": cpu, "cmd": cmd}
+                          for i, (cmd, rss, cpu) in enumerate((
+                              ("osmo-bsc -c /etc/osmocom/osmo-bsc.cfg", 14, "0.3"),
+                              ("osmo-bts-trx -c /etc/osmocom/osmo-bts-trx.cfg", 22, "4.1"),
+                              ("osmo-hlr -c /etc/osmocom/osmo-hlr.cfg", 9, "0.0"),
+                              ("osmo-mgw -c /etc/osmocom/osmo-mgw.cfg", 11, "0.1"),
+                              ("osmo-msc -c /etc/osmocom/osmo-msc.cfg", 18, "0.2"),
+                              ("osmo-stp -c /etc/osmocom/osmo-stp.cfg", 8, "0.0"),
+                              ("qemu-system-arm -M calypso", 190, "38.0")))],
+                "vty": [{"hote": "127.0.0.1", "port": p, "nom": n, "pid": "1", "invite": inv}
+                        for n, p, inv in (("osmo-msc", 4254, "OsmoMSC"), ("osmo-bsc", 4242, "OsmoBSC"),
+                                          ("osmo-hlr", 4258, "OsmoHLR"), ("osmo-bts-trx", 4241, "OsmoBTS"))]}
+
+    def console(self, hote, port, ligne):
+        return {"sortie": "> %s\n  IMSI: 001010000000001  MSISDN: 100101  LAC: 1  attaché\n"
+                          "  IMSI: 001010000000002  MSISDN: 100102  LAC: 1  attaché" % ligne}
+
+    def trunk(self, choice=None):
+        DemoNode._trunk = choice or getattr(DemoNode, "_trunk", "dongle")
+        return {"trunk": DemoNode._trunk, "choix": list(TRUNKS)}
+
+    def enrol(self, pseudo, code):
+        return {"msisdn": "100150", "sip_user": "100150", "sip_password": "", "sip_domain": "10.8.0.1",
+                "sip_port": 5060, "sip_transport": "udp"}
+
+
+# ── SIP : une interface, deux arrière-plans ─────────────────────────────────
+#   on_reg(ok, texte)   on_call(état, pair)   on_message(pair, texte)
+#   état : "incoming" | "calling" | "ringing" | "active" | "ended"
+# pjsua2 tourne DANS la boucle GTK (aucun fil pjsua : les rappels Python
+# venus d un fil étranger sont ce qui casse les applis pjsua2), sondé à 20 ms.
+if pj:
+    class _Call(pj.Call):
+        def __init__(self, sip, acc, call_id=pj.PJSUA_INVALID_ID):
+            pj.Call.__init__(self, acc, call_id)
+            self.sip = sip
+
+        def onCallState(self, prm):
+            ci = self.getInfo()
+            peer = peer_of(ci.remoteUri)
+            if ci.state == pj.PJSIP_INV_STATE_EARLY and ci.role == pj.PJSIP_ROLE_UAC:
+                self.sip.on_call("ringing", peer)
+            elif ci.state == pj.PJSIP_INV_STATE_CONFIRMED:
+                self.sip.on_call("active", peer)
+            elif ci.state == pj.PJSIP_INV_STATE_DISCONNECTED:
+                self.sip.on_call("ended", ci.lastReason or peer)
+                GLib.idle_add(self.sip._forget, self)      # jamais détruit depuis son propre rappel
+
+        def onCallMediaState(self, prm):
+            ci = self.getInfo()
+            adm = pj.Endpoint.instance().audDevManager()
+            for i, mi in enumerate(ci.media):
+                if mi.type == pj.PJMEDIA_TYPE_AUDIO and mi.status == pj.PJSUA_CALL_MEDIA_ACTIVE:
+                    am = self.getAudioMedia(i)
+                    adm.getCaptureDevMedia().startTransmit(am)
+                    am.startTransmit(adm.getPlaybackDevMedia())
+
+    class _Account(pj.Account):
+        def __init__(self, sip):
+            pj.Account.__init__(self)
+            self.sip = sip
+
+        def onRegState(self, prm):
+            ok = prm.code // 100 == 2 and self.getInfo().regIsActive
+            self.sip.on_reg(ok, "" if ok else "%d %s" % (prm.code, prm.reason))
+
+        def onIncomingCall(self, prm):
+            call = _Call(self.sip, self, prm.callId)
+            op = pj.CallOpParam()
+            if self.sip.call is not None:                  # un appel à la fois
+                op.statusCode = 486
+                call.hangup(op)
+                return
+            self.sip.call = call
+            op.statusCode = 180
+            call.answer(op)
+            self.sip.on_call("incoming", peer_of(call.getInfo().remoteUri))
+
+        def onInstantMessage(self, prm):
+            self.sip.on_message(peer_of(prm.fromUri), prm.msgBody)
+
+
+class PjSip:
+    def __init__(self, on_reg, on_call, on_message):
+        self.on_reg, self.on_call, self.on_message = on_reg, on_call, on_message
+        self.ep = self.acc = self.call = None
+        self.domain = ""
+        self.buddies = {}
+        self.timer = 0
+
+    def start(self, a):
+        if pj is None:
+            raise RuntimeError("pjsua2 absent : apk add py3-pjsua")
+        self.stop()
+        self.domain = a["sip_domain"]
+        self.ep = pj.Endpoint()
+        self.ep.libCreate()
+        cfg = pj.EpConfig()
+        cfg.uaConfig.threadCnt = 0
+        cfg.uaConfig.mainThreadOnly = True
+        cfg.uaConfig.userAgent = "network-monitor/" + VERSION
+        cfg.logConfig.level = 2
+        self.ep.libInit(cfg)
+        tr = {"tcp": pj.PJSIP_TRANSPORT_TCP, "tls": pj.PJSIP_TRANSPORT_TLS}.get(
+            a["sip_transport"], pj.PJSIP_TRANSPORT_UDP)
+        self.ep.transportCreate(tr, pj.TransportConfig())
+        self.ep.libStart()
+        ac = pj.AccountConfig()
+        ac.idUri = "sip:%s@%s" % (a["sip_user"], self.domain)
+        ac.regConfig.registrarUri = "sip:%s:%d;transport=%s" % (self.domain, a["sip_port"], a["sip_transport"])
+        ac.sipConfig.authCreds.append(pj.AuthCredInfo("digest", "*", a["sip_user"], 0, a["sip_password"]))
+        self.acc = _Account(self)
+        self.acc.create(ac)
+        self.timer = GLib.timeout_add(20, self._poll)
+
+    def _poll(self):
+        self.ep.libHandleEvents(0)
+        return True
+
+    def _forget(self, call):
+        if self.call is call:
+            self.call = None
+        return False
+
+    def _uri(self, num):
+        return "sip:%s@%s" % (num, self.domain)
+
+    def dial(self, num):
+        if self.acc is None:
+            raise RuntimeError("pas de compte sur un nœud")
+        if self.call is None:
+            self.call = _Call(self, self.acc)
+            self.call.makeCall(self._uri(num), pj.CallOpParam(True))
+            self.on_call("calling", num)
+
+    def answer(self):
+        if self.call is not None:
+            op = pj.CallOpParam()
+            op.statusCode = 200
+            self.call.answer(op)
+
+    def hangup(self):
+        if self.call is not None:
+            self.call.hangup(pj.CallOpParam())
+
+    def send(self, num, text):
+        if self.acc is None:
+            raise RuntimeError("pas de compte sur un nœud")
+        b = self.buddies.get(num)
+        if b is None:
+            bc = pj.BuddyConfig()
+            bc.uri = self._uri(num)
+            bc.subscribe = False
+            b = pj.Buddy()
+            b.create(self.acc, bc)
+            self.buddies[num] = b
+        prm = pj.SendInstantMessageParam()
+        prm.content = text
+        b.sendInstantMessage(prm)
+
+    def stop(self):
+        if self.timer:
+            GLib.source_remove(self.timer)
+            self.timer = 0
+        if self.ep is not None:
+            self.buddies.clear()
+            self.call = self.acc = None
+            self.ep.libDestroy()
+            self.ep = None
+
+
+class DemoSip:
+    def __init__(self, on_reg, on_call, on_message):
+        self.on_reg, self.on_call, self.on_message = on_reg, on_call, on_message
+        self.in_call = False
+
+    def start(self, a):
+        GLib.timeout_add(300, lambda: self.on_reg(True, "") and False)
+        GLib.timeout_add(900, lambda: self.on_message("100102", "Le banc est en ligne, tu me reçois ?") and False)
+
+    def dial(self, num):
+        self.in_call = True
+        self.on_call("calling", num)
+        GLib.timeout_add(800, lambda: self.in_call and self.on_call("ringing", num) and False)
+        GLib.timeout_add(2500, lambda: self.in_call and self.on_call("active", num) and False)
+
+    def answer(self):
+        self.on_call("active", "100102")
+
+    def hangup(self):
+        self.in_call = False
+        self.on_call("ended", "")
+
+    def send(self, num, text):
+        GLib.timeout_add(900, lambda: self.on_message(num, "reçu : " + text) and False)
+
+    def stop(self):
+        pass
+
+
+# ── La palette turbo (Google, approximation polynomiale) ────────────────────
+def _turbo(x):
+    x = max(0.0, min(1.0, x))
+    r = 0.13572138 + x * (4.61539260 + x * (-42.66032258 + x * (132.13108234 + x * (-152.94239396 + x * 59.28637943))))
+    g = 0.09140261 + x * (2.19418839 + x * (4.84296658 + x * (-14.18503333 + x * (4.27729857 + x * 2.82956604))))
+    b = 0.10667330 + x * (12.64194608 + x * (-60.58204836 + x * (110.36276771 + x * (-89.90310912 + x * 27.34824973))))
+    return tuple(max(0.0, min(1.0, c)) for c in (r, g, b))
+
+
+TURBO = [_turbo(i / 255) for i in range(256)]
+TURBO_BGRX = [bytes((int(b * 255), int(g * 255), int(r * 255), 255)) for r, g, b in TURBO]
+LEVEL_RGB = {4: (0.18, 0.76, 0.49), 3: (0.21, 0.52, 0.89), 2: (0.90, 0.65, 0.04), 1: (0.88, 0.11, 0.14),
+             0: (0.5, 0.5, 0.5)}
+
+
+class Spectrum(Gtk.DrawingArea):
+    """Le spectre d une source I/Q du nœud : la DSP en haut, la cascade
+    (waterfall, palette turbo) en dessous. Les lignes descendent."""
+    W, ROWS = 256, 150
+
+    def __init__(self):
+        super().__init__(vexpand=True)
+        self.set_size_request(-1, 380)
+        self.stride = cairo.ImageSurface.format_stride_for_width(cairo.FORMAT_RGB24, self.W)
+        self.buf = bytearray(TURBO_BGRX[0] * (self.stride // 4) * self.ROWS)
+        self.surf = cairo.ImageSurface.create_for_data(self.buf, cairo.FORMAT_RGB24, self.W, self.ROWS, self.stride)
+        self.trace = []
+        self.peak_hold = []
+        self.lo, self.hi = -100.0, -50.0
+        self.span = (-541.0, 541.0)
+        self.label = ""
+        self.message = "en attente du nœud…"
+        self.set_draw_func(self._draw)
+
+    def push(self, d):
+        if not d or d.get("error") or not d.get("psd"):
+            self.message = (d or {}).get("error") or "pas de réponse du nœud"
+            self.queue_draw()
+            return
+        psd, n = d["psd"], len(d["psd"])
+        # W colonnes : le maximum de chaque groupe (un pic étroit ne disparaît pas)
+        cols = [max(psd[i * n // self.W:max(i * n // self.W + 1, (i + 1) * n // self.W)]) for i in range(self.W)]
+        s = sorted(cols)
+        lo, hi = s[len(s) // 10] - 4, s[-1] + 4             # plancher de bruit et crête, lissés
+        self.lo += (lo - self.lo) * 0.15
+        self.hi += (max(hi, lo + 20) - self.hi) * 0.15
+        rng = max(1.0, self.hi - self.lo)
+        self.trace = [max(0.0, min(1.0, (v - self.lo) / rng)) for v in cols]
+        self.peak_hold = [max(a * 0.985, b) for a, b in zip(self.peak_hold or self.trace, self.trace)]
+        self.surf.flush()
+        self.buf[self.stride:] = self.buf[:-self.stride]
+        self.buf[:self.W * 4] = b"".join(TURBO_BGRX[int(v * 255)] for v in self.trace)
+        self.surf.mark_dirty()
+        if d.get("freqs"):
+            self.span = (d["freqs"][0], d["freqs"][-1])
+        self.label = "%s · ARFCN %s" % (d.get("label", ""), d.get("arfcn", "?"))
+        self.peak = (cols.index(s[-1]), s[-1])
+        self.message = ""
+        self.queue_draw()
+
+    @staticmethod
+    def _round(cr, x, y, w, h, r):
+        cr.new_sub_path()
+        cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+        cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+        cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+        cr.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
+        cr.close_path()
+
+    def _draw(self, _area, cr, w, h):
+        th = h * 0.36                                       # hauteur de la trace
+        self._round(cr, 0, 0, w, h, 14)
+        cr.clip()
+        cr.set_source_rgb(0.03, 0.04, 0.07)
+        cr.paint()
+        cr.select_font_face("Sans")
+        # la cascade
+        cr.save()
+        cr.translate(0, th)
+        cr.scale(w / self.W, (h - th) / self.ROWS)
+        cr.set_source_surface(self.surf, 0, 0)
+        cr.get_source().set_filter(cairo.FILTER_BILINEAR)
+        cr.paint()
+        cr.restore()
+        if not self.trace:
+            cr.set_source_rgba(1, 1, 1, 0.6)
+            cr.set_font_size(13)
+            e = cr.text_extents(self.message)
+            cr.move_to((w - e.width) / 2, th / 2)
+            cr.show_text(self.message)
+            return
+        # la grille
+        cr.set_line_width(1)
+        cr.set_font_size(10)
+        for k in range(1, 4):
+            y = th * k / 4
+            cr.set_source_rgba(1, 1, 1, 0.08)
+            cr.move_to(0, y); cr.line_to(w, y); cr.stroke()
+            cr.set_source_rgba(1, 1, 1, 0.45)
+            cr.move_to(6, y - 3)
+            cr.show_text("%d dB" % (self.hi - (self.hi - self.lo) * k / 4))
+        # l aire sous la trace, aux couleurs de la palette
+        pad = 6
+        ys = [th - pad - v * (th - 2 * pad - 14) for v in self.trace]
+        grad = cairo.LinearGradient(0, pad, 0, th)
+        for stop in (0.0, 0.35, 0.7, 1.0):
+            r, g, b = TURBO[int((1 - stop) * 255)]
+            grad.add_color_stop_rgba(stop, r, g, b, 0.85 - 0.6 * stop)
+        cr.move_to(0, th)
+        for i, y in enumerate(ys):
+            cr.line_to(w * i / (self.W - 1), y)
+        cr.line_to(w, th)
+        cr.close_path()
+        cr.set_source(grad)
+        cr.fill()
+        # la crête retenue, puis la trace
+        cr.set_source_rgba(1, 1, 1, 0.28)
+        for i, v in enumerate(self.peak_hold):
+            (cr.line_to if i else cr.move_to)(w * i / (self.W - 1), th - pad - v * (th - 2 * pad - 14))
+        cr.stroke()
+        cr.set_source_rgba(1, 1, 1, 0.95)
+        cr.set_line_width(1.6)
+        for i, y in enumerate(ys):
+            (cr.line_to if i else cr.move_to)(w * i / (self.W - 1), y)
+        cr.stroke()
+        # le pic et les étiquettes
+        pi, pv = self.peak
+        px, f0, f1 = w * pi / (self.W - 1), self.span[0], self.span[1]
+        cr.set_source_rgba(1, 1, 1, 0.9)
+        cr.arc(px, ys[pi], 3.5, 0, 2 * math.pi)
+        cr.fill()
+        txt = "%+.0f kHz · %.0f dB" % (f0 + (f1 - f0) * pi / (self.W - 1), pv)
+        cr.set_font_size(11)
+        e = cr.text_extents(txt)
+        cr.move_to(max(4, min(w - e.width - 4, px - e.width / 2)), max(12, ys[pi] - 8))
+        cr.show_text(txt)
+        cr.set_source_rgba(1, 1, 1, 0.75)
+        cr.move_to(8, h - 8); cr.show_text("%+.0f kHz" % f0)
+        t = "%+.0f kHz" % f1
+        cr.move_to(w - cr.text_extents(t).width - 8, h - 8); cr.show_text(t)
+        cr.set_font_size(12)
+        cr.move_to(w - cr.text_extents(self.label).width - 8, 16); cr.show_text(self.label)
+        if self.message:
+            cr.set_source_rgba(1, 0.6, 0.3, 0.95)
+            cr.move_to(8, th + 16); cr.show_text(self.message)
+
+
+class Gauge(Gtk.DrawingArea):
+    """La mesure principale en arc : la couleur est celle du niveau."""
+
+    def __init__(self):
+        super().__init__(halign=Gtk.Align.CENTER)
+        self.set_size_request(230, 170)
+        self.frac, self.shown, self.level = 0.0, 0.0, 0
+        self.text, self.name = "—", ""
+        self.set_draw_func(self._draw)
+
+    def set_value(self, metric, value, level):
+        lo, hi = RANGES.get(metric, (0, 100))
+        self.frac = 0.0 if value is None else max(0.0, min(1.0, (value - lo) / (hi - lo)))
+        self.level = level or 0
+        self.text = fmt(value, "", 1 if isinstance(value, float) else 0)
+        self.name = ("%s · %s" % (LABELS[metric], UNITS[metric])) if value is not None else "pas de mesure"
+        if abs(self.frac - self.shown) > 0.002:
+            GLib.timeout_add(16, self._ease)
+        self.queue_draw()
+
+    def _ease(self):
+        self.shown += (self.frac - self.shown) * 0.2
+        self.queue_draw()
+        return abs(self.frac - self.shown) > 0.002
+
+    def _draw(self, _area, cr, w, h):
+        fg = self.get_color()
+        cx, cy, r = w / 2, h * 0.60, min(w / 2, h * 0.60) - 10
+        a0, a1 = math.radians(150), math.radians(390)
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        cr.set_line_width(13)
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.12)
+        cr.arc(cx, cy, r, a0, a1)
+        cr.stroke()
+        red, green, blue = LEVEL_RGB[self.level]
+        if self.shown > 0.005:
+            a = a0 + (a1 - a0) * self.shown
+            cr.set_source_rgba(red, green, blue, 0.22)       # le halo
+            cr.set_line_width(22)
+            cr.arc(cx, cy, r, a0, a)
+            cr.stroke()
+            cr.set_source_rgb(red, green, blue)
+            cr.set_line_width(13)
+            cr.arc(cx, cy, r, a0, a)
+            cr.stroke()
+        cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
+        cr.set_font_size(40)
+        e = cr.text_extents(self.text)
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 1)
+        cr.move_to(cx - e.width / 2 - e.x_bearing, cy + 10)
+        cr.show_text(self.text)
+        cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+        cr.set_font_size(12)
+        e = cr.text_extents(self.name)
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.6)
+        cr.move_to(cx - e.width / 2, cy + 34)
+        cr.show_text(self.name)
+
+
+class Swiper(Gtk.Box):
+    """Des pages que l on feuillette du doigt (Adw.Carousel), le titre de la
+    page et les points au-dessus ; les chevrons pour qui n a pas d écran tactile."""
+
+    def __init__(self, on_change=None):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        self.names, self.titles, self.on_change = [], [], on_change
+        self.all = []                    # (nom, titre, page) : tout ce qui existe, montré ou non
+        self.carousel = Adw.Carousel(vexpand=True, allow_scroll_wheel=False, spacing=12)
+        head = Gtk.CenterBox(margin_top=6, margin_start=6, margin_end=6)
+        prev = Gtk.Button(icon_name="go-previous-symbolic", css_classes=["flat", "circular"])
+        nxt = Gtk.Button(icon_name="go-next-symbolic", css_classes=["flat", "circular"])
+        prev.connect("clicked", lambda *_: self.step(-1))
+        nxt.connect("clicked", lambda *_: self.step(1))
+        mid = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.title = Gtk.Label(css_classes=["heading"])
+        mid.append(self.title)
+        mid.append(Adw.CarouselIndicatorDots(carousel=self.carousel))
+        head.set_start_widget(prev); head.set_center_widget(mid); head.set_end_widget(nxt)
+        self.append(head)
+        self.append(self.carousel)
+        self.carousel.connect("page-changed", self._changed)
+
+    def restrict(self, names):
+        """Ne montre que ces pages (les modes) ; l ordre d origine est gardé."""
+        for n, _t, w in self.all:
+            if n in self.names:
+                self.carousel.remove(w)
+        self.names, self.titles = [], []
+        for n, t, w in self.all:
+            if n in names:
+                self.names.append(n); self.titles.append(t)
+                self.carousel.append(w)
+        if self.names:
+            self.title.set_text(self.titles[0])
+
+    def add(self, name, title, widget):
+        self.all.append((name, title, widget))
+        self.names.append(name); self.titles.append(title)
+        self.carousel.append(widget)
+        if len(self.names) == 1:
+            self.title.set_text(title)
+
+    def index(self):
+        return max(0, min(len(self.names) - 1, int(round(self.carousel.get_position()))))
+
+    def current(self):
+        return self.names[self.index()] if self.names else ""
+
+    def show(self, name, animate=True):
+        if name not in self.names:
+            return
+        self.carousel.scroll_to(self.carousel.get_nth_page(self.names.index(name)), animate)
+        self.title.set_text(self.titles[self.names.index(name)])
+
+    def step(self, d):
+        i = max(0, min(len(self.names) - 1, self.index() + d))
+        self.show(self.names[i])
+
+    def _changed(self, _c, i):
+        if i >= len(self.names):
+            return
+        self.title.set_text(self.titles[i])
+        if self.on_change:
+            self.on_change(self.names[i])
+
+
+# La sortie vers le réseau public (TRUNK_EXT du plan de numérotation Asterisk du nœud).
+TRUNKS = {"zadarma": "Zadarma", "dongle": "Dongle"}
+# Trois niveaux : ce que l on montre, pas ce que l on sait faire.
+#   Basique : Téléphone, Messages, Compte.
+#   Medium  : + Radio (cellule, signal, voisines) et Nœud (spectres, services).
+#   Expert  : + trames, journal, console VTY, choix de la sortie.
+MODES = ("Basique", "Medium", "Expert")
+MODE_RADIO = (None, ("cell", "signal", "neighbors"), ("cell", "signal", "neighbors", "frames", "log"))
+MODE_NODE = (None, ("bts", "ms", "services"), ("bts", "ms", "services", "console"))
+
+KEYS = (("1", ""), ("2", "ABC"), ("3", "DEF"), ("4", "GHI"), ("5", "JKL"), ("6", "MNO"),
+        ("7", "PQRS"), ("8", "TUV"), ("9", "WXYZ"), ("*", ""), ("0", "+"), ("#", ""))
+CALL_TEXT = {"incoming": "Appel entrant", "calling": "Appel en cours…", "ringing": "Ça sonne…",
+             "active": "En communication"}
+
+
+class NodeUi:
+    """Les pages Téléphone, Messages, Nœud et Compte de la fenêtre."""
+
+    def toast(self, text):
+        self.toasts.add_toast(Adw.Toast(title=text, timeout=4))
+
+    def _in_thread(self, work, done):
+        def run():
+            try:
+                res, err = work(), None
+            except Exception as e:                          # noqa: BLE001  (montré à l utilisateur)
+                res, err = None, str(e) or e.__class__.__name__
+            GLib.idle_add(lambda: done(res, err) and False)
+        threading.Thread(target=run, daemon=True).start()
+
+    # ── Téléphone ──
+    def _page_phone(self):
+        self.phone_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
+        # pas encore de compte : rejoindre un nœud
+        page = Adw.StatusPage(icon_name="call-start-symbolic", title="Rejoindre un nœud",
+                              description="Un numéro du réseau, sans carte SIM.")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        grp = Adw.PreferencesGroup()
+        self.j_node = Adw.EntryRow(title="Adresse du nœud (IP locale, WireGuard, VPS)")
+        self.j_user = Adw.EntryRow(title="Pseudo")
+        self.j_code = Adw.PasswordEntryRow(title="Code d'invitation")
+        for r in (self.j_node, self.j_user, self.j_code):
+            grp.add(r)
+        box.append(grp)
+        self.j_go = Gtk.Button(label="S'inscrire", css_classes=["pill", "suggested-action"], halign=Gtk.Align.CENTER)
+        self.j_go.connect("clicked", self.on_join)
+        box.append(self.j_go)
+        direct = Gtk.Button(label="J'ai déjà un compte SIP", css_classes=["flat"], halign=Gtk.Align.CENTER,
+                            tooltip_text="Pseudo = identifiant SIP, code = mot de passe SIP")
+        direct.connect("clicked", self.on_direct)
+        box.append(direct)
+        page.set_child(Adw.Clamp(maximum_size=420, child=box))
+        self.phone_stack.add_named(page, "join")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=12, margin_bottom=16,
+                      margin_start=16, margin_end=16)
+        self.call_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                                 css_classes=["call-card"], visible=False)
+        self.call_peer = Gtk.Label(xalign=0, css_classes=["call-peer"], ellipsize=Pango.EllipsizeMode.END)
+        self.call_info = Gtk.Label(xalign=0, css_classes=["numeric"])
+        self.call_card.append(self.call_peer)
+        self.call_card.append(self.call_info)
+        box.append(self.call_card)
+        self.number = Gtk.Entry(css_classes=["dial-entry"], xalign=0.5, vexpand=True, valign=Gtk.Align.CENTER,
+                                placeholder_text="Numéro", input_purpose=Gtk.InputPurpose.PHONE)
+        self.number.connect("activate", lambda *_: self.on_dial())
+        box.append(self.number)
+        grid = Gtk.Grid(row_spacing=10, column_spacing=22, halign=Gtk.Align.CENTER)
+        for i, (digit, sub) in enumerate(KEYS):
+            inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, valign=Gtk.Align.CENTER)
+            inner.append(Gtk.Label(label=digit))
+            if sub:
+                inner.append(Gtk.Label(label=sub, css_classes=["sub"]))
+            key = Gtk.Button(child=inner, css_classes=["dial-key"])
+            key.connect("clicked", lambda _b, d=digit: self._key(d))
+            grid.attach(key, i % 3, i // 3, 1, 1)
+        box.append(grid)
+        row = Gtk.Box(spacing=22, halign=Gtk.Align.CENTER, margin_top=8)
+
+        def round_btn(icon, classes, tip, cb, visible=True):
+            b = Gtk.Button(icon_name=icon, css_classes=["call-btn"] + classes, tooltip_text=tip, visible=visible,
+                           halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+            b.connect("clicked", cb)
+            return b
+        self.b_answer = round_btn("call-start-symbolic", ["go"], "Répondre", lambda *_: self.sip.answer(), False)
+        self.b_call = round_btn("call-start-symbolic", ["go"], "Appeler", lambda *_: self.on_dial())
+        self.b_hang = round_btn("call-stop-symbolic", ["destructive-action"], "Raccrocher",
+                                lambda *_: self.sip.hangup(), False)
+        for b in (round_btn("mail-send-symbolic", ["flat"], "Écrire à ce numéro", self._to_messages),
+                  self.b_answer, self.b_call, self.b_hang,
+                  round_btn("edit-clear-symbolic", ["flat"], "Effacer",
+                            lambda *_: self.number.set_text(self.number.get_text()[:-1]))):
+            row.append(b)
+        box.append(row)
+        self.phone_stack.add_named(Adw.Clamp(maximum_size=420, child=box), "dial")
+        return self.phone_stack
+
+    def on_join(self, _btn):
+        host, user, code = node_host(self.j_node.get_text()), self.j_user.get_text().strip(), self.j_code.get_text().strip()
+        if not (host and user and code):
+            return self.toast("Adresse du nœud, pseudo et code sont nécessaires")
+        self.set_node(host)
+        self.j_go.set_sensitive(False)
+        self.j_go.set_label("Inscription…")
+
+        def done(acc, err):
+            self.j_go.set_sensitive(True)
+            self.j_go.set_label("S'inscrire")
+            if err:
+                self.toast("Inscription refusée : " + err)
+            else:
+                self.use_account(acc)
+        self._in_thread(lambda: self.node.enrol(user, code), done)
+
+    def on_direct(self, _btn):
+        hp, user = re.sub(r"^[a-z]+://", "", self.j_node.get_text().strip()), self.j_user.get_text().strip()
+        if not (hp and user):
+            return self.toast("Adresse du nœud et identifiant SIP sont nécessaires (le code sert de mot de passe)")
+        host, _, port = hp.partition(":")
+        self.set_node(host)
+        self.use_account({"msisdn": user, "sip_user": user, "sip_password": self.j_code.get_text(),
+                          "sip_domain": host, "sip_port": int(port) if port.isdigit() else 5060,
+                          "sip_transport": "udp"})
+
+    def use_account(self, acc, save=True):
+        self.account = acc
+        if save and not self.demo:
+            self.settings["account"] = acc
+            save_settings(self.settings)
+        self.a_number.set_subtitle(acc["msisdn"])
+        self.a_sip.set_subtitle("%s:%d (%s)" % (acc["sip_domain"], acc["sip_port"], acc["sip_transport"]))
+        self.a_leave.set_sensitive(True)
+        self.on_reg(False, "connexion…")
+        self.phone_stack.set_visible_child_name("dial")
+        try:
+            self.sip.start(acc)
+        except Exception as e:                              # noqa: BLE001
+            self.on_reg(False, str(e))
+
+    def on_leave(self, _btn):
+        self.sip.stop()
+        self.account = None
+        self.settings.pop("account", None)
+        if not self.demo:
+            save_settings(self.settings)
+        self.a_number.set_subtitle("—")
+        self.a_sip.set_subtitle("—")
+        self.a_leave.set_sensitive(False)
+        self.on_reg(False, "")
+        self.phone_stack.set_visible_child_name("join")
+
+    def _key(self, d):
+        self.number.set_text(self.number.get_text() + d)
+        self.number.set_position(-1)
+
+    def on_dial(self):
+        num = self.number.get_text().replace(" ", "")
+        if not num:
+            return self.toast("Numéro manquant")
+        try:
+            self.sip.dial(num)
+        except Exception as e:                              # noqa: BLE001
+            self.toast("Appel impossible : %s" % e)
+
+    def _to_messages(self, _btn):
+        if self.number.get_text():
+            self.m_to.set_text(self.number.get_text())
+        self.tabs.set_visible_child_name("messages")
+
+    # ── Messages ──
+    def _page_messages(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.m_to = Adw.EntryRow(title="À (numéro)", input_purpose=Gtk.InputPurpose.PHONE)
+        top = Adw.PreferencesGroup(margin_top=12, margin_start=12, margin_end=12)
+        top.add(self.m_to)
+        box.append(top)
+        self.m_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12, margin_bottom=12,
+                              margin_start=12, margin_end=12, valign=Gtk.Align.END)
+        self.m_scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True, child=self.m_list)
+        self.m_stack = Gtk.Stack()
+        self.m_stack.add_named(Adw.StatusPage(icon_name="mail-unread-symbolic", title="Aucun message",
+                                              description="Les SMS du réseau arrivent ici.", vexpand=True), "empty")
+        self.m_stack.add_named(self.m_scroll, "list")
+        box.append(self.m_stack)
+        bar = Gtk.Box(spacing=8, margin_start=12, margin_end=12, margin_bottom=12)
+        self.m_text = Gtk.Entry(hexpand=True, placeholder_text="Message")
+        self.m_text.connect("activate", self.on_send)
+        send = Gtk.Button(icon_name="mail-send-symbolic", css_classes=["circular", "suggested-action"])
+        send.connect("clicked", self.on_send)
+        bar.append(self.m_text)
+        bar.append(send)
+        box.append(bar)
+        return Adw.Clamp(maximum_size=640, child=box)
+
+    def on_send(self, _w):
+        num, text = self.m_to.get_text().replace(" ", ""), self.m_text.get_text()
+        if not (num and text):
+            return self.toast("Numéro ou message manquant")
+        try:
+            self.sip.send(num, text)
+        except Exception as e:                              # noqa: BLE001
+            return self.toast("SMS non envoyé : %s" % e)
+        self._bubble(num, text, out=True)
+        self.m_text.set_text("")
+
+    def _bubble(self, peer, text, out):
+        row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
+                      halign=Gtk.Align.END if out else Gtk.Align.START)
+        row.append(Gtk.Label(label=text, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=28,
+                             xalign=0, selectable=True, css_classes=["bubble", "out" if out else "in"]))
+        row.append(Gtk.Label(label="%s %s · %s" % ("à" if out else "de", peer, time.strftime("%H:%M")),
+                             xalign=1 if out else 0, css_classes=["bubble-meta"]))
+        self.m_list.append(row)
+        self.m_stack.set_visible_child_name("list")
+        GLib.idle_add(lambda: self.m_scroll.get_vadjustment().set_value(
+            self.m_scroll.get_vadjustment().get_upper()) and False)
+
+    # ── Nœud : spectres, services, console ──
+    def _page_node(self):
+        self.node_swiper = Swiper()
+        self.spec = {}
+        for src, title in (("bts", "Spectre BTS (descendant)"), ("ms", "Spectre MS (montant)")):
+            self.spec[src] = Spectrum()
+            self.spec[src].set_margin_start(12); self.spec[src].set_margin_end(12)
+            self.spec[src].set_margin_top(8); self.spec[src].set_margin_bottom(12)
+            self.node_swiper.add(src, title, self.spec[src])
+
+        v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.n_procs = Adw.PreferencesGroup(title="Processus du banc", description="en attente du nœud…")
+        self.n_proc_rows = []
+        v.append(self.n_procs)
+        self.node_swiper.add("services", "Services", self._scroll(v))
+
+        v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_start=12, margin_end=12,
+                    margin_top=8, margin_bottom=12)
+        self.n_vty = []
+        self.n_vty_sel = Gtk.DropDown.new_from_strings(["(aucun démon)"])
+        v.append(self.n_vty_sel)
+        self.n_out = Gtk.TextView(editable=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR,
+                                  top_margin=8, left_margin=8, right_margin=8, bottom_margin=8,
+                                  css_classes=["console"])
+        v.append(Gtk.ScrolledWindow(vexpand=True, child=self.n_out, css_classes=["card"]))
+        quick = Gtk.Box(spacing=6, homogeneous=True)
+        for label, cmd in (("abonnés", "show subscriber all"), ("stats", "show stats"), ("version", "show version")):
+            b = Gtk.Button(label=label, css_classes=["pill"])
+            b.connect("clicked", lambda _b, c=cmd: self.on_vty(c))
+            quick.append(b)
+        v.append(quick)
+        bar = Gtk.Box(spacing=8)
+        self.n_cmd = Gtk.Entry(hexpand=True, placeholder_text="commande VTY (show …)", css_classes=["monospace"])
+        self.n_cmd.connect("activate", lambda *_: self.on_vty(self.n_cmd.get_text()))
+        go = Gtk.Button(icon_name="go-next-symbolic", css_classes=["circular", "suggested-action"])
+        go.connect("clicked", lambda *_: self.on_vty(self.n_cmd.get_text()))
+        bar.append(self.n_cmd); bar.append(go)
+        v.append(bar)
+        self.node_swiper.add("console", "Console VTY", v)
+        self.node_busy = False
+        self.node_etat_at = 0
+        GLib.timeout_add(250, self._node_poll)
+        return self.node_swiper
+
+    def _node_poll(self):
+        if self.tabs.get_visible_child_name() != "node" or self.node_busy or self.node is None:
+            if self.node is None and self.tabs.get_visible_child_name() == "node":
+                for s in self.spec.values():
+                    s.message = "pas de nœud : donne son adresse dans Compte"
+                    s.queue_draw()
+            return True
+        page, node = self.node_swiper.current(), self.node
+        if page in self.spec:
+            self.node_busy = True
+
+            def done(d, err):
+                self.node_busy = False
+                self.spec[page].push(d if d else {"error": "nœud injoignable (%s)" % err})
+            self._in_thread(lambda: node.psd(page), done)
+        elif time.time() - self.node_etat_at > 5:
+            self.node_busy = True
+            self.node_etat_at = time.time()
+
+            def done(d, err):
+                self.node_busy = False
+                self._render_etat(d, err)
+            self._in_thread(node.etat, done)
+        return True
+
+    def _render_etat(self, d, err):
+        for r in self.n_proc_rows:
+            self.n_procs.remove(r)
+        self.n_proc_rows = []
+        if err or not d or "procs" not in d:
+            self.n_procs.set_description("nœud injoignable sur le port %d : %s" % (PORT_API, err or d))
+            return
+        self.n_procs.set_description("%d processus · %s" % (len(d["procs"]), self.node.host))
+        for p in d["procs"]:
+            name = os.path.basename(p["cmd"].split()[0])
+            age = p["age"]
+            row = Adw.ActionRow(title=name, subtitle="pid %s · %s · %d Mo" % (
+                p["pid"], "%d h %02d" % (age // 3600, age % 3600 // 60) if age >= 3600 else "%d min" % (age // 60),
+                p["rss"]), tooltip_text=p["cmd"])
+            cpu = float(p["cpu"] or 0)
+            row.add_prefix(Gtk.Box(css_classes=["dot", "on"], valign=Gtk.Align.CENTER))
+            row.add_suffix(Gtk.Label(label="%.1f %%" % cpu, css_classes=["numeric"] + (
+                ["error"] if cpu > 80 else ["warning"] if cpu > 30 else ["dim-label"])))
+            self.n_procs.add(row)
+            self.n_proc_rows.append(row)
+        vty = d.get("vty") or []
+        if [(x["hote"], x["port"]) for x in vty] != [(x["hote"], x["port"]) for x in self.n_vty]:
+            self.n_vty = vty
+            self.n_vty_sel.set_model(Gtk.StringList.new(
+                ["%s  (%s:%d)" % (x.get("invite") or x["nom"], x["hote"], x["port"]) for x in vty] or ["(aucun démon)"]))
+
+    def on_vty(self, cmd):
+        cmd = cmd.strip()
+        if not cmd:
+            return
+        if self.node is None:
+            return self.toast("Pas de nœud : donne son adresse dans Compte")
+        if not self.n_vty:
+            self.node_etat_at = 0
+            return self.toast("Aucun démon VTY connu pour l'instant (page Services)")
+        d = self.n_vty[min(self.n_vty_sel.get_selected(), len(self.n_vty) - 1)]
+        buf = self.n_out.get_buffer()
+
+        def done(res, err):
+            buf.insert(buf.get_end_iter(), ((res or {}).get("sortie") or (res or {}).get("err")
+                                            or "erreur : %s" % (err or res)) + "\n\n")
+            GLib.idle_add(lambda: self.n_out.scroll_to_iter(buf.get_end_iter(), 0, False, 0, 1) and False)
+        self._in_thread(lambda: self.node.console(d["hote"], d["port"], cmd), done)
+        self.n_cmd.set_text("")
+
+    # ── Compte ──
+    def _page_account(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        grp = Adw.PreferencesGroup(title="Nœud", description="Spectres, services, console et trames viennent de "
+                                   "cette adresse : IP locale, WireGuard ou VPS.")
+        self.a_node = Adw.EntryRow(title="Adresse du nœud", show_apply_button=True)
+        self.a_node.connect("apply", lambda r: self.set_node(node_host(r.get_text()), announce=True))
+        grp.add(self.a_node)
+        self.a_trunk = Adw.ComboRow(title="Sortie vers l'extérieur", subtitle="appels vers les numéros publics",
+                                    model=Gtk.StringList.new(list(TRUNKS.values())), sensitive=False)
+        self.a_trunk_quiet = True
+        self.a_trunk.connect("notify::selected", self.on_trunk)
+        grp.add(self.a_trunk)
+        box.append(grp)
+        grp = Adw.PreferencesGroup(title="Téléphone")
+        self.a_number = Adw.ActionRow(title="Numéro", subtitle="—", css_classes=["property"], subtitle_selectable=True)
+        self.a_sip = Adw.ActionRow(title="Compte SIP", subtitle="—", css_classes=["property"])
+        self.a_state = Adw.ActionRow(title="État", subtitle="pas de compte", css_classes=["property"])
+        for r in (self.a_number, self.a_sip, self.a_state):
+            grp.add(r)
+        box.append(grp)
+        self.a_leave = Gtk.Button(label="Quitter ce nœud", css_classes=["pill", "destructive-action"],
+                                  halign=Gtk.Align.CENTER, sensitive=False)
+        self.a_leave.connect("clicked", self.on_leave)
+        box.append(self.a_leave)
+        grp = Adw.PreferencesGroup(title="Affichage")
+        self.a_mode = Adw.ComboRow(title="Mode", subtitle="ce que l'appli montre",
+                                   model=Gtk.StringList.new(list(MODES)))
+        self.a_mode.connect("notify::selected", lambda r, _p: self.set_mode(r.get_selected()))
+        grp.add(self.a_mode)
+        box.append(grp)
+        box.append(Gtk.Label(label="Network Monitor " + VERSION, css_classes=["dim-label", "caption"]))
+        return self._scroll(box)
+
+    def _trunk_shown(self, d, err):
+        ok = bool(d) and d.get("trunk") in TRUNKS
+        self.a_trunk.set_sensitive(ok)
+        self.a_trunk.set_subtitle("appels vers les numéros publics" if ok else
+                                  "indisponible : %s" % (err or (d or {}).get("err") or "le nœud ne répond pas"))
+        if ok:
+            self.a_trunk_quiet = True
+            self.a_trunk.set_selected(list(TRUNKS).index(d["trunk"]))
+            self.a_trunk_quiet = False
+
+    def on_trunk(self, *_):
+        if self.a_trunk_quiet or self.node is None:
+            return
+        choice, node = list(TRUNKS)[self.a_trunk.get_selected()], self.node
+
+        def done(d, err):
+            self._trunk_shown(d, err)
+            self.toast("Sortie : %s" % TRUNKS[d["trunk"]] if d and d.get("trunk") == choice
+                       else "Sortie inchangée : %s" % (err or (d or {}).get("err") or "refus du nœud"))
+        self._in_thread(lambda: node.trunk(choice), done)
+
+    def set_mode(self, mode):
+        mode = max(0, min(len(MODES) - 1, mode))
+        if getattr(self, "mode", None) == mode:
+            return
+        self.mode = mode
+        if self.a_mode.get_selected() != mode:
+            self.a_mode.set_selected(mode)
+        for tab, pages, swiper in ((self.tab_radio, MODE_RADIO[mode], self.stack),
+                                   (self.tab_node, MODE_NODE[mode], self.node_swiper)):
+            tab.set_visible(pages is not None)
+            if pages is not None:
+                swiper.restrict(pages)
+        self.a_trunk.set_visible(mode == 2)
+        if mode == 0 and self.tabs.get_visible_child_name() in ("radio", "node"):
+            self.tabs.set_visible_child_name("phone")
+        if not self.demo and self.settings.get("mode") != mode:
+            self.settings["mode"] = mode
+            save_settings(self.settings)
+
+    def set_node(self, host, announce=False):
+        """L adresse du nœud : tout ce qui vient du banc repart de là."""
+        self.node = (DemoNode if self.demo else NodeClient)(host) if host else None
+        for row in (self.a_node, self.j_node):
+            if row.get_text() != host:
+                row.set_text(host)
+        if not self.demo:
+            self.settings["node"] = host
+            save_settings(self.settings)
+            if self._frame_cls and host:
+                if self.frame_source:
+                    self.frame_source.stop()
+                self.frame_source = self._frame_cls(["ws://%s:%d/" % (host, PORT_WS)] + list(self._frame_urls),
+                                                    self.add_frame, self.on_frames_status)
+        self.node_etat_at = 0
+        if self.node is not None:
+            self._in_thread(self.node.trunk, self._trunk_shown)
+        else:
+            self._trunk_shown(None, "pas de nœud")
+        if announce:
+            self.toast("Nœud : %s" % host if host else "Plus de nœud")
+
+    # ── les événements SIP ──
+    def on_reg(self, ok, text):
+        state = ("En ligne" if ok else "Hors ligne" + (" · " + text if text else "")) if self.account else ""
+        self.title.set_title(self.account["msisdn"] if self.account else "Network Monitor")
+        self.title.set_subtitle(state)
+        self.a_state.set_subtitle(state or "pas de compte")
+        self.dot.set_visible(self.account is not None)
+        (self.dot.add_css_class if ok else self.dot.remove_css_class)("on")
+        return True
+
+    def on_call(self, state, peer):
+        self.call_state = None if state == "ended" else state
+        busy = self.call_state is not None
+        self.b_call.set_visible(not busy)
+        self.b_hang.set_visible(busy)
+        self.b_answer.set_visible(state == "incoming")
+        self.call_card.set_visible(busy)
+        for c in ("live", "ring"):
+            self.call_card.remove_css_class(c)
+        if busy:
+            self.call_card.add_css_class("live" if state == "active" else "ring")
+            self.call_peer.set_text(peer)
+            self.call_info.set_text(CALL_TEXT[state])
+            if state == "active":
+                self.call_since = time.monotonic()
+            if state == "incoming":
+                self.tabs.set_visible_child_name("phone")
+                self.present()
+        return True
+
+    def on_message(self, peer, text):
+        self._bubble(peer, text, out=False)
+        if not self.m_to.get_text():
+            self.m_to.set_text(peer)
+        if self.tabs.get_visible_child_name() != "messages":
+            self.msg_page.set_needs_attention(True)
+            self.toast("SMS de %s" % peer)
+        return True
+
+    def _call_tick(self):
+        if self.call_state == "active":
+            s = int(time.monotonic() - self.call_since)
+            self.call_info.set_text("%s · %02d:%02d" % (CALL_TEXT["active"], s // 60, s % 60))
+        return True
+
+
 CSS = b"""
 .hero { padding: 18px; border-radius: 12px; }
 .hero-rat { font-size: 30px; font-weight: 800; }
@@ -941,14 +2019,31 @@ CSS = b"""
 .frame-text { font-family: monospace; font-size: 11px; }
 label.dir-ul { color: #e5a50a; font-weight: 700; }   /* l etiquette seule : la ligne garde sa couleur de texte */
 label.dir-dl { color: #3584e4; font-weight: 700; }
+.hero { background-image: linear-gradient(160deg, alpha(@accent_bg_color, 0.20), alpha(@accent_bg_color, 0.03)); }
+.dial-entry { font-size: 34px; font-weight: 300; background: none; box-shadow: none; outline: none; }
+.dial-key { font-size: 26px; min-width: 76px; min-height: 76px; border-radius: 38px; }
+.dial-key .sub { font-size: 10px; font-weight: 700; opacity: 0.55; letter-spacing: 2px; }
+.call-btn { min-width: 68px; min-height: 68px; border-radius: 34px; }
+.call-btn.go { background-color: @success_bg_color; color: @success_fg_color; }
+.call-card { padding: 14px 18px; border-radius: 16px; }
+.call-card.live { background-color: alpha(@success_bg_color, 0.22); }
+.call-card.ring { background-color: alpha(@accent_bg_color, 0.25); }
+.call-peer { font-size: 22px; font-weight: 700; }
+.bubble { padding: 8px 12px; border-radius: 16px; }
+.bubble.in { background-color: alpha(currentColor, 0.10); border-bottom-left-radius: 4px; }
+.bubble.out { background-color: @accent_bg_color; color: @accent_fg_color; border-bottom-right-radius: 4px; }
+.bubble-meta { font-size: 11px; opacity: 0.6; }
+.dot { min-width: 10px; min-height: 10px; border-radius: 5px; background-color: @error_bg_color; }
+.dot.on { background-color: @success_bg_color; }
+.console { font-size: 12px; background: none; }
 """
 KINDS = ("bcch", "lapdm", "mm", "rr", "cc", "sms", "core", "lte", "rrc", "nas", "mon", "other")
 
 
 # ── La fenetre ──────────────────────────────────────────────────────────────
-class Window(Adw.ApplicationWindow):
-    def __init__(self, app, source, frame_source_cls=None, frames_urls=()):
-        super().__init__(application=app, title="Signal", default_width=380, default_height=740)
+class Window(NodeUi, Adw.ApplicationWindow):
+    def __init__(self, app, source, frame_source_cls=None, frames_urls=(), demo=False):
+        super().__init__(application=app, title="Network Monitor", default_width=380, default_height=740)
         self.source = source
         self.frames = Gio.ListStore.new(FrameItem)
         self.frames_total = 0
@@ -968,13 +2063,10 @@ class Window(Adw.ApplicationWindow):
         self.toasts.set_child(view)
 
         header = Adw.HeaderBar()
-        self.stack = Adw.ViewStack()
-        # En-tete : le commutateur de pages quand la fenetre est large, un
-        # simple titre sur un telephone (le commutateur passe alors en bas).
-        self.title_stack = Gtk.Stack(hhomogeneous=False, vhomogeneous=False)
-        self.title_stack.add_named(Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE), "switcher")
-        self.title_stack.add_named(Adw.WindowTitle(title="Signal"), "title")
-        header.set_title_widget(self.title_stack)
+        self.title = Adw.WindowTitle(title="Network Monitor")
+        header.set_title_widget(self.title)
+        self.dot = Gtk.Box(css_classes=["dot"], valign=Gtk.Align.CENTER, margin_start=6, visible=False)
+        header.pack_start(self.dot)
         menu = Gio.Menu()
         menu.append("Balayer les réseaux", "win.scan")
         menu.append("Enregistrer en CSV", "win.record")
@@ -984,21 +2076,35 @@ class Window(Adw.ApplicationWindow):
         self.rec_icon = Gtk.Image(icon_name="media-record-symbolic", visible=False, css_classes=["error"])
         header.pack_end(self.rec_icon)
         view.add_top_bar(header)
-        view.set_content(self.stack)
-        self.switcher_bar = Adw.ViewSwitcherBar(stack=self.stack, reveal=True)
-        view.add_bottom_bar(self.switcher_bar)
-        # etroit (telephone) : commutateur en bas ; large : dans l en-tete
-        bp = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 550sp"))
-        bp.add_setter(self.switcher_bar, "reveal", True)
-        bp.add_setter(self.title_stack, "visible-child-name", "title")
-        self.add_breakpoint(bp)
-        self.switcher_bar.set_reveal(False)
+        # Cinq onglets en bas ; « Radio » et « Nœud » se feuillettent du doigt.
+        self.tabs = Adw.ViewStack()
+        view.set_content(self.tabs)
+        view.add_bottom_bar(Adw.ViewSwitcherBar(stack=self.tabs, reveal=True))
 
-        self.stack.add_titled_with_icon(self._page_cell(), "cell", "Cellule", "network-cellular-symbolic")
-        self.stack.add_titled_with_icon(self._page_signal(), "signal", "Signal", "network-cellular-signal-good-symbolic")
-        self.stack.add_titled_with_icon(self._page_neighbors(), "neighbors", "Voisines", "view-list-symbolic")
-        self.stack.add_titled_with_icon(self._page_frames(), "frames", "Trames", "network-transmit-receive-symbolic")
-        self.stack.add_titled_with_icon(self._page_log(), "log", "Journal", "document-open-recent-symbolic")
+        self.demo = demo
+        self.settings = {} if demo else load_settings()
+        self.account = self.node = self.call_state = self.frame_source = None
+        self.call_since = 0
+        self._frame_cls, self._frame_urls = frame_source_cls, frames_urls
+        self.sip = (DemoSip if demo else PjSip)(self.on_reg, self.on_call, self.on_message)
+
+        self.stack = Swiper(on_change=lambda *_: self._frames_pin())
+        for name, title, page in (("cell", "Cellule", self._page_cell()), ("signal", "Signal", self._page_signal()),
+                                  ("neighbors", "Voisines", self._page_neighbors()),
+                                  ("frames", "Trames", self._page_frames()), ("log", "Journal", self._page_log())):
+            self.stack.add(name, title, page)
+        self.tabs.add_titled_with_icon(self._page_phone(), "phone", "Téléphone", "call-start-symbolic")
+        self.msg_page = self.tabs.add_titled_with_icon(self._page_messages(), "messages", "Messages",
+                                                       "mail-unread-symbolic")
+        self.tab_radio = self.tabs.add_titled_with_icon(self.stack, "radio", "Radio", "network-cellular-symbolic")
+        self.tab_node = self.tabs.add_titled_with_icon(self._page_node(), "node", "Nœud", "network-server-symbolic")
+        self.tabs.add_titled_with_icon(self._page_account(), "account", "Compte", "avatar-default-symbolic")
+        self.tabs.connect("notify::visible-child-name", lambda *_: self.tabs.get_visible_child_name() == "messages"
+                          and self.msg_page.set_needs_attention(False))
+        self.tabs.set_visible_child_name("radio")
+        mode = os.environ.get("NETMON_MODE", "")
+        self.set_mode(MODES.index(mode.capitalize()) if mode.capitalize() in MODES
+                      else int(self.settings.get("mode", 2 if demo else 1)))
 
         for name, cb in (("scan", self.on_scan), ("clear", lambda *_: self.events.remove_all()),
                          ("about", self.on_about)):
@@ -1007,7 +2113,20 @@ class Window(Adw.ApplicationWindow):
         rec.connect("change-state", self.on_record); self.add_action(rec)
 
         self.frame_source = frame_source_cls(frames_urls, self.add_frame, self.on_frames_status) if frame_source_cls else None
-        self.connect("close-request", lambda *_: (self.frame_source and self.frame_source.stop()) and False)
+        self.connect("close-request", lambda *_: (self.sip.stop(), self.frame_source and self.frame_source.stop())
+                     and False)
+        GLib.timeout_add_seconds(1, self._call_tick)
+        host = "démo" if demo else (os.environ.get("NETMON_NODE") or self.settings.get("node") or "")
+        if host:
+            self.set_node(host)
+        if self.settings.get("account"):
+            self.use_account(self.settings["account"], save=False)
+        if demo:                        # un passé simulé : le graphe n attend pas dix minutes
+            now = time.time()
+            for i in range(200, 0, -1):
+                smp = self.source.sample()
+                for k in self.history:
+                    self.history[k].append((now - i * POLL_S, smp.get(k)))
 
         self.tick()
         GLib.timeout_add_seconds(POLL_S, self.tick)
@@ -1030,7 +2149,8 @@ class Window(Adw.ApplicationWindow):
         self.h_reg = Gtk.Label(label="", xalign=0, css_classes=["dim-label"], ellipsize=Pango.EllipsizeMode.END)
         self.h_metric = Gtk.Label(label="", xalign=0, css_classes=["hero-metric", "numeric"])
         self.h_metric_name = Gtk.Label(label="", xalign=0, css_classes=["dim-label", "caption"])
-        box.append(self.h_op); box.append(self.h_reg); box.append(self.h_metric); box.append(self.h_metric_name)
+        self.h_gauge = Gauge()
+        box.append(self.h_op); box.append(self.h_reg); box.append(self.h_gauge)
         return box
 
     def _page_cell(self):
@@ -1135,7 +2255,6 @@ class Window(Adw.ApplicationWindow):
         adj.connect("changed", self._on_frames_adj_changed)
         adj.connect("value-changed", self._on_frames_adj_value)
         self.f_model.connect("items-changed", lambda *_: self._frames_pin())
-        self.stack.connect("notify::visible-child", lambda *_: self._frames_pin())
         return v
 
     def _on_frames_adj_changed(self, adj):
@@ -1361,6 +2480,7 @@ class Window(Adw.ApplicationWindow):
         self.h_metric_name.set_text(LABELS[m] if val is not None else "pas de mesure")
         lvl = level_of(m, val) if m != "quality" else (0 if not val else max(1, min(4, math.ceil(val / 25))))
         self.h_bars.set_level(lvl + 1 if lvl else 0)   # 5 barres : niveau 4 -> toutes
+        self.h_gauge.set_value(m, val, lvl)
 
         r = self.r_cell
         r["plmn"].set(("%s / %s" % (s["mcc"], s["mnc"])) if s["mcc"] else "")
@@ -1469,18 +2589,41 @@ class Window(Adw.ApplicationWindow):
         """Rend chaque page dans un PNG (GTK dessine lui-meme, l ecran de
         verrouillage ou l absence d ecran n y changent rien), puis quitte."""
         os.makedirs(directory, exist_ok=True)
-        pages = self.stack.get_pages()
-        names = [pages.get_item(i).get_name() for i in range(pages.get_n_items())]
         renderer = Gsk.CairoRenderer.new()
         renderer.realize(None)
 
+        def radio(name):
+            return lambda: (self.tabs.set_visible_child_name("radio"), self.stack.show(name, False))
+
+        def node(name):
+            def go():
+                for src, sp in self.spec.items():       # une cascade pleine, sans attendre
+                    for _ in range(sp.ROWS):
+                        self.node.t0 -= 0.25
+                        sp.push(self.node.psd(src))
+                self.tabs.set_visible_child_name("node")
+                self.node_swiper.show(name, False)
+                if name == "console":
+                    self.on_vty("show subscriber all")
+            return go
+        steps = [("cellule", radio("cell")), ("signal", radio("signal")), ("voisines", radio("neighbors")),
+                 ("trames", radio("frames")), ("journal", radio("log")),
+                 ("spectre-bts", node("bts")), ("spectre-ms", node("ms")),
+                 ("services", node("services")), ("console", node("console")),
+                 ("rejoindre", lambda: self.tabs.set_visible_child_name("phone")),
+                 ("telephone", lambda: (self.use_account(self.node.enrol("", "")), self.number.set_text("100102"),
+                                        self.on_call("active", "100102"))),
+                 ("messages", lambda: (self.on_call("ended", ""), self._bubble("100102", "Oui, 5 sur 5.", True),
+                                       self.tabs.set_visible_child_name("messages"))),
+                 ("compte", lambda: self.tabs.set_visible_child_name("account"))]
+
         def shoot(i):
-            if i >= len(names):
+            if i >= len(steps):
                 renderer.unrealize()
                 self.get_application().quit()
                 return False
-            self.stack.set_visible_child_name(names[i])
-            GLib.timeout_add(900, snap, i)
+            steps[i][1]()
+            GLib.timeout_add(1500, snap, i)
             return False
 
         def snap(i):
@@ -1489,12 +2632,12 @@ class Window(Adw.ApplicationWindow):
             snapshot = Gtk.Snapshot()
             snapshot.scale(scale, scale)
             Gtk.WidgetPaintable.new(self).snapshot(snapshot, w, h)
-            node = snapshot.to_node()
-            if node is None:            # pas encore dessine (surface cachee) : on reessaie
+            node_ = snapshot.to_node()
+            if node_ is None:            # pas encore dessine (surface cachee) : on reessaie
                 GLib.timeout_add(1000, snap, i)
                 return False
-            tex = renderer.render_texture(node, Graphene.Rect().init(0, 0, w * scale, h * scale))
-            path = os.path.join(directory, "%d-%s.png" % (i + 1, names[i]))
+            tex = renderer.render_texture(node_, Graphene.Rect().init(0, 0, w * scale, h * scale))
+            path = os.path.join(directory, "%02d-%s.png" % (i + 1, steps[i][0]))
             tex.save_to_png(path)
             print("capture :", path, tex.get_width(), "x", tex.get_height())
             shoot(i + 1)
@@ -1534,7 +2677,7 @@ class App(Adw.Application):
             pending = []
             src = (DemoSource if self.demo else ModemSource)(lambda t: pending.append(t))
             win = Window(self, src, DemoFrameSource if self.demo else (FrameSource if self.frames_urls else None),
-                         self.frames_urls)
+                         self.frames_urls, demo=self.demo)
             src.on_event = win.add_event
             for t in pending:
                 win.add_event(t)

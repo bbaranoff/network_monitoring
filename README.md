@@ -11,6 +11,41 @@ banc** (osmo-egprs-web), qui fait tourner tshark sur l'hôte et les pousse par
 WebSocket : depuis la VM l'hôte est `10.0.2.2`, l'appli s'y branche toute
 seule.
 
+## 0.3 : le moniteur devient un poste du réseau
+
+Cinq onglets : **Téléphone**, **Messages**, **Radio**, **Nœud**, **Compte**.
+« Radio » (les pages d'avant) et « Nœud » se feuillettent du doigt.
+
+Tout part d'**une adresse**, celle d'un nœud osmo-operator (IP locale,
+WireGuard ou VPS), saisie une fois dans Compte :
+
+| service du nœud | ce que l'appli en fait |
+|---|---|
+| `http://<nœud>:8081/psd` (fft-web) | Nœud : spectres BTS et MS, cascade en palette turbo |
+| `http://<nœud>:8090/api/etat`, `/api/console` (osmo-reglages) | Nœud : services, console VTY |
+| `http://<nœud>:8090/api/trunk` (osmo-reglages) | Compte : sortie vers l'extérieur, Zadarma ou dongle |
+| `ws://<nœud>:8080/` (tableau de bord) | Radio : trames |
+| `http://<nœud>:8088/inscription` | Téléphone : code d'invitation → compte SIP |
+| `sip:<nœud>:5060` (Asterisk) | Téléphone, Messages : appels et SMS (SIP MESSAGE), pjsua2 |
+
+Rien de tout cela n'est authentifié côté nœud : réseau local ou WireGuard,
+jamais l'Internet ouvert. `osmo-reglages.py` écoute sur 127.0.0.1 par
+défaut : le lancer avec `--bind <adresse du nœud>`.
+
+**Modes** (Compte → Affichage) : *Basique* (téléphone, messages, compte),
+*Medium* (+ cellule, signal, voisines, spectres, services), *Expert*
+(+ trames, journal, console VTY, choix de la sortie). `NETMON_MODE=expert`
+le force ; `NETMON_NODE=192.168.1.20` donne le nœud sans passer par Compte.
+
+**Android** : `android/` est la même appli en Kotlin (SDK Linphone pour le
+SIP, `TelephonyManager` pour la radio). L'APK est construite par
+`.github/workflows/apk.yml` (Actions → artefact `network-monitor-apk`).
+Pas encore de page Trames sur Android.
+
+Pas encore validé : le SIP de l'appli pmOS (pjsua2) contre un vrai Asterisk,
+la compilation Android ; et le service `/inscription` n'existe pas encore côté
+nœud (« J'ai déjà un compte SIP » marche sans lui).
+
 ## Fichiers
 
 | fichier | rôle |
@@ -25,7 +60,7 @@ seule.
 
 ## Installation
 
-L'appli est un paquet Alpine : `dist/network-monitor-0.2-r0.apk` (noarch,
+L'appli est un paquet Alpine : `dist/network-monitor-<version>-r0.apk` (noarch,
 il va sur la VM comme sur un téléphone ARM). Directement sur le pmOS :
 
 ```sh

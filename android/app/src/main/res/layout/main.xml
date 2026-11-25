@@ -1,0 +1,406 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true"
+    android:orientation="vertical">
+
+    <TextView
+        android:id="@+id/status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="14dp"
+        android:text="Network Monitor"
+        android:textSize="18sp"
+        android:textStyle="bold" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingLeft="16dp"
+            android:paddingRight="16dp">
+
+            <!-- ── Téléphone : rejoindre un nœud ─────────────────────── -->
+            <LinearLayout
+                android:id="@+id/panel_join"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingBottom="8dp"
+                    android:text="Rejoindre un nœud : un numéro du réseau, sans carte SIM."
+                    android:textSize="16sp" />
+
+                <EditText
+                    android:id="@+id/user"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="Pseudo (ou identifiant SIP)"
+                    android:inputType="text" />
+
+                <EditText
+                    android:id="@+id/secret"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="Code d'invitation (ou mot de passe SIP)"
+                    android:inputType="textPassword" />
+
+                <Button
+                    android:id="@+id/btn_join"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="S'inscrire avec le code" />
+
+                <Button
+                    android:id="@+id/btn_direct"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="J'ai déjà un compte SIP" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="L'adresse du nœud se règle dans Compte."
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <!-- ── Téléphone : appels et SMS ─────────────────────────── -->
+            <LinearLayout
+                android:id="@+id/panel_phone"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <EditText
+                    android:id="@+id/number"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:hint="Numéro"
+                    android:inputType="phone"
+                    android:textSize="30sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btn_call"
+                        android:layout_width="0dp"
+                        android:layout_height="64dp"
+                        android:layout_weight="1"
+                        android:text="Appeler" />
+
+                    <Button
+                        android:id="@+id/btn_answer"
+                        android:layout_width="0dp"
+                        android:layout_height="64dp"
+                        android:layout_weight="1"
+                        android:enabled="false"
+                        android:text="Répondre" />
+
+                    <Button
+                        android:id="@+id/btn_hangup"
+                        android:layout_width="0dp"
+                        android:layout_height="64dp"
+                        android:layout_weight="1"
+                        android:enabled="false"
+                        android:text="Raccrocher" />
+                </LinearLayout>
+
+                <EditText
+                    android:id="@+id/text"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="Message"
+                    android:inputType="textMultiLine" />
+
+                <Button
+                    android:id="@+id/btn_send"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Envoyer le SMS" />
+
+                <TextView
+                    android:id="@+id/journal"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="12dp"
+                    android:textIsSelectable="true" />
+            </LinearLayout>
+
+            <!-- ── Radio : la cellule serveuse et les voisines ───────── -->
+            <LinearLayout
+                android:id="@+id/panel_radio"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/radio_rat"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="—"
+                    android:textSize="28sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/radio_metric"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text=""
+                    android:textSize="44sp" />
+
+                <TextView
+                    android:id="@+id/radio_cells"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="12dp"
+                    android:textIsSelectable="true"
+                    android:typeface="monospace" />
+            </LinearLayout>
+
+            <!-- ── Nœud : spectres, services, console ────────────────── -->
+            <LinearLayout
+                android:id="@+id/panel_node"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/spectrum_title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:paddingBottom="6dp"
+                    android:text="Spectre BTS (descendant)  ●○"
+                    android:textStyle="bold" />
+
+                <org.osmooperator.app.SpectrumView
+                    android:id="@+id/spectrum"
+                    android:layout_width="match_parent"
+                    android:layout_height="380dp" />
+
+                <TextView
+                    android:id="@+id/services"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="14dp"
+                    android:textIsSelectable="true"
+                    android:typeface="monospace" />
+
+                <LinearLayout
+                    android:id="@+id/panel_console"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingTop="14dp">
+
+                    <Spinner
+                        android:id="@+id/vty_sel"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <EditText
+                            android:id="@+id/vty_cmd"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:hint="commande VTY (show …)"
+                            android:inputType="text"
+                            android:typeface="monospace" />
+
+                        <Button
+                            android:id="@+id/btn_vty"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="→" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/vty_out"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textIsSelectable="true"
+                        android:typeface="monospace" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- ── Compte ────────────────────────────────────────────── -->
+            <LinearLayout
+                android:id="@+id/panel_account"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Nœud : IP locale, WireGuard ou VPS"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <EditText
+                        android:id="@+id/node"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:hint="192.168.1.20"
+                        android:inputType="textUri" />
+
+                    <Button
+                        android:id="@+id/btn_node"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="OK" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/panel_trunk"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingTop="14dp">
+
+                    <TextView
+                        android:id="@+id/trunk_state"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Sortie vers l'extérieur : —"
+                        android:textStyle="bold" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btn_zadarma"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Zadarma" />
+
+                        <Button
+                            android:id="@+id/btn_dongle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Dongle" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/mode_state"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="14dp"
+                    android:text="Mode"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btn_mode0"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Basique" />
+
+                    <Button
+                        android:id="@+id/btn_mode1"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Medium" />
+
+                    <Button
+                        android:id="@+id/btn_mode2"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Expert" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/account"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="14dp"
+                    android:textIsSelectable="true" />
+
+                <Button
+                    android:id="@+id/btn_leave"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Quitter ce nœud" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- ── Les onglets ───────────────────────────────────────────────── -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/tab_phone"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:text="Tél." />
+
+        <Button
+            android:id="@+id/tab_radio"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:text="Radio" />
+
+        <Button
+            android:id="@+id/tab_node"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:text="Nœud" />
+
+        <Button
+            android:id="@+id/tab_account"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="0dp"
+            android:layout_height="56dp"
+            android:layout_weight="1"
+            android:text="Compte" />
+    </LinearLayout>
+</LinearLayout>

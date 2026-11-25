@@ -3,13 +3,13 @@
 # (abuild dans le chroot natif de pmbootstrap) ; ne pas lancer abuild ici
 # directement, les sources sont dans le dossier parent.
 pkgname=network-monitor
-pkgver=0.2
+pkgver=0.3
 pkgrel=0
-pkgdesc="Cellular signal monitor for Phosh: serving cell, signal levels, neighbours, frames and log, read from ModemManager"
+pkgdesc="Cellular monitor and SIM-less phone for Phosh, client of an osmo-operator node"
 url="https://github.com/bbaranoff/osmo-operator"
 arch="noarch"
 license="GPL-3.0-or-later"
-depends="python3 py3-gobject3 py3-cairo gtk4.0 libadwaita libsoup3 libmm-glib modemmanager"
+depends="python3 py3-gobject3 py3-cairo gtk4.0 libadwaita libsoup3 libmm-glib modemmanager py3-pjsua"
 options="!check"
 source="network-monitor.py
 	org.osmocom.NetworkMonitor.desktop
@@ -25,7 +25,7 @@ package() {
 }
 
 sha512sums="
-86c2b77a11d83078784745f260036d73616394cd259df0b0f211b2164464d50c7abdacf73d0c650f75335da616d82f2e98cbecc1e140b1ed56da739eed6e14f4  network-monitor.py
+a9e6baa8b2c31ca5e9cf88920f3689d420a413b627508dc7aaf033d2acdbfcfe78b18024d44285faf68e206bae6c5944225023cc34eb91fb7088cda1e29d346f  network-monitor.py
 2f9992b48270c11c67fddd1b13486acb66352c42ab96813772259ca290ce8b01572d43678dd3816c9df09c70f2e9caeb30b3f4e114c223d7b2190961cd7aa562  org.osmocom.NetworkMonitor.desktop
 94085b63c8e522da2d9a897311f8de50e78e15548aaf1a7224b269500ce48d0a9569d7ee995674fd06f23bef27885aaaccde0f171a33de3c1cb9c6fce95d7bb6  org.osmocom.NetworkMonitor.svg
 "
