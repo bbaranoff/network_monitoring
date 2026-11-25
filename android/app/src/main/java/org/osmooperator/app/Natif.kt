@@ -84,6 +84,52 @@ object Bench {
         if (m != prefs(ctx).getString("numeros_banc", null)) prefs(ctx).edit().putString("numeros_banc", m).apply()
     }
 
+    /** Calls dialled by the app itself (its keypad, or for the native keypad):
+     *  they are shown in the app, not handed to the native Phone app. */
+    @Volatile var appDialing = false
+    val appCalls: MutableSet<Call> = java.util.Collections.synchronizedSet(HashSet<Call>())
+
+    /** The number the native keypad was dialling, called by the app over SIP.
+     *  Main thread. The call screen of the app opens (full-screen notification:
+     *  a service may not start an activity by itself). */
+    fun dialInApp(ctx: Context, num: String) {
+        val c = core
+        val domain = prefs(ctx).getString("sip_domain", "") ?: ""
+        val to = if (c == null) null else Factory.instance().createAddress("sip:$num@$domain")
+        if (c == null || to == null) {
+            notify(ctx, "Appel par le banc impossible", "$num : ouvrez Network Monitor (l'appli n'est pas lancée).")
+            return
+        }
+        val params = c.createCallParams(null)
+        params?.mediaEncryption = org.linphone.core.MediaEncryption.None
+        appDialing = true
+        val call = try {
+            if (params == null) c.inviteAddress(to) else c.inviteAddressWithParams(to, params)
+        } finally {
+            appDialing = false
+        }
+        if (call == null) {
+            notify(ctx, "Appel par le banc refusé", "Numéro « $num » : le nœud ($domain) ne l'a pas accepté.")
+            return
+        }
+        appCalls.add(call)
+        val open = PendingIntent.getActivity(ctx, 2,
+            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val nm = ctx.getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel("appel", "Appels du banc", NotificationManager.IMPORTANCE_HIGH))
+        val n = Notification.Builder(ctx, "appel")
+            .setContentTitle("Appel par le banc : $num")
+            .setContentText("Touchez pour voir l'appel et raccrocher")
+            .setSmallIcon(android.R.drawable.sym_call_outgoing)
+            .setCategory(Notification.CATEGORY_CALL)
+            .setFullScreenIntent(open, true)
+            .setContentIntent(open).setOngoing(true)
+            .build()
+        try { nm.notify(43, n) } catch (e: SecurityException) { }
+        try { ctx.startActivity(Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)) } catch (e: Exception) { }
+    }
+
     /** A call through the native Phone app, on the account of the bench. */
     @android.annotation.SuppressLint("MissingPermission")
     fun place(ctx: Context, num: String) {
@@ -179,6 +225,8 @@ object Bench {
         c.addListener(object : CoreListenerStub() {
             override fun onCallStateChanged(core: Core, call: Call, state: Call.State?, message: String) {
                 val a = app ?: return
+                if ((state == Call.State.Released || state == Call.State.End || state == Call.State.Error) && appCalls.contains(call))
+                    a.getSystemService(NotificationManager::class.java)?.cancel(43)
                 // THE SIM IS ALREADY RINGING OR IN A CALL: the bench rings its phones
                 // for a call received by this very SIM (Bluetooth line) - this phone
                 // must not ring a second time for it, through its bench account.
@@ -283,9 +331,12 @@ class BenchRedirect : android.telecom.CallRedirectionService() {
             // telecom) start the call on the SIM without waiting for the answer,
             // and the new account is ignored. The call of the SIM is CANCELLED,
             // and the same number is placed again, on the account of the bench.
+            // ... and NOT through Telecom either: ColorOS sends a call placed on
+            // the account of the bench back to the SIM (tested). The app places
+            // it itself, over SIP, and shows it on its own call screen.
             cancelCall()
             val app = applicationContext
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ Bench.place(app, num) }, 500)
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ Bench.dialInApp(app, num) }, 400)
         } else {
             placeCallUnmodified()
         }

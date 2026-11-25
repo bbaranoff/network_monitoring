@@ -118,8 +118,6 @@ class MainActivity : Activity() {
     private lateinit var themeState: TextView
     private lateinit var btnAnswer: Button
     private lateinit var btnHangup: Button
-    private var appDialing = false
-    private val appCalls = HashSet<Call>()
     private lateinit var node: EditText
     private lateinit var spectrum: SpectrumView
     private lateinit var services: TextView
@@ -175,9 +173,9 @@ class MainActivity : Activity() {
         override fun onCallStateChanged(core: Core, call: Call, state: Call.State?, message: String) {
             // A call dialled FROM THIS APP stays in this app, proxy or not: it is
             // not in the native Phone app, so its Hang up button must be here.
-            if (appDialing && state == Call.State.OutgoingInit) appCalls.add(call)
-            val own = appCalls.contains(call)
-            if (state == Call.State.Released) appCalls.remove(call)
+            if (Bench.appDialing && state == Call.State.OutgoingInit) Bench.appCalls.add(call)
+            val own = Bench.appCalls.contains(call)
+            if (state == Call.State.Released) Bench.appCalls.remove(call)
             if (Bench.nativeActive(this@MainActivity) && !own) return     // the native Phone app has the call
             val peer = call.remoteAddress.username ?: call.remoteAddress.asStringUriOnly()
             // An incoming call must be HEARD, app in the background included.
@@ -413,6 +411,16 @@ class MainActivity : Activity() {
         super.onResume()
         if (tab == "proxy") { natifNote(); proxyNote() }    // back from a settings screen
         if (tab == "quick") quickNote()
+        // A call placed for the native keypad while the screen was elsewhere
+        // (Bench.dialInApp): it is shown here, with its Hang up button.
+        try {
+            val c = core.currentCall
+            if (c != null && Bench.appCalls.contains(c)) {
+                btnHangup.isEnabled = true
+                showCall(c.remoteAddress.username ?: "", if (c.state == Call.State.StreamsRunning) "En communication" else "Appel en cours…")
+                show("phone")
+            }
+        } catch (e: Exception) { }
         // back from the calling-accounts screen with « Banc » enabled: the role, once
         if (!roleAsked && Bench.nativeActive(this) && !Bench.redirects(this)) askRedirection()
         ui.post(poll)
@@ -940,11 +948,11 @@ class MainActivity : Activity() {
         }
         val params = core.createCallParams(null)
         params?.mediaEncryption = MediaEncryption.None
-        appDialing = true
+        Bench.appDialing = true
         try {
             if (params == null) core.inviteAddress(to) else core.inviteAddressWithParams(to, params)
         } finally {
-            appDialing = false
+            Bench.appDialing = false
         }
     }
 
