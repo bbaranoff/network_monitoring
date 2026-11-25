@@ -40,6 +40,7 @@ import math
 import os
 import random
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -1057,6 +1058,79 @@ def http_json(url, data=None, timeout=4):
             return {"error": "HTTP %d" % e.code, "err": "HTTP %d" % e.code}
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# LE PROXY : le banc dans les applis du téléphone
+#
+# Activé, le numéro du banc ne sonne plus ici mais dans l appli Appels de
+# GNOME (gnome-calls), qui sait tenir un compte SIP : on lui écrit ce compte
+# comme elle l écrirait elle-même - un groupe de ~/.config/calls/sip-account.cfg,
+# le mot de passe dans le trousseau (schéma sm.puri.Calls) - et on la relance.
+# Cette appli reste enregistrée à côté, pour les SMS : Appels ne reçoit pas de
+# SIP MESSAGE. Elle laisse les appels entrants à Appels et montre les SMS en
+# notification du téléphone.
+# ═══════════════════════════════════════════════════════════════════════════
+CALLS_CFG = os.path.join(GLib.get_user_config_dir(), "calls", "sip-account.cfg")
+CALLS_ID = "osmo-banc"               # l Id de NOTRE compte dans Appels : on ne touche qu à lui
+
+
+def _calls_secret(acc, password):
+    """Le mot de passe du compte, là où Appels le cherche. None : on l efface."""
+    gi.require_version("Secret", "1")
+    from gi.repository import Secret
+    schema = Secret.Schema.new("sm.puri.Calls", Secret.SchemaFlags.NONE, {
+        "server": Secret.SchemaAttributeType.STRING, "username": Secret.SchemaAttributeType.STRING,
+        "protocol": Secret.SchemaAttributeType.STRING})
+    attrs = {"server": acc["sip_domain"], "username": acc["sip_user"], "protocol": "sip"}
+    if password is None:
+        Secret.password_clear_sync(schema, attrs, None)
+    else:
+        Secret.password_store_sync(schema, attrs, Secret.COLLECTION_DEFAULT,
+                                   "Calls Password for %s" % CALLS_ID, password, None)
+
+
+def calls_proxy(acc, on):
+    """Pose (ou retire) le compte du banc dans Appels. Lève une exception lisible."""
+    kf = GLib.KeyFile()
+    try:
+        kf.load_from_file(CALLS_CFG, GLib.KeyFileFlags.KEEP_COMMENTS)
+    except GLib.Error:
+        pass                                           # pas encore de fichier : Appels n a aucun compte SIP
+    groups = kf.get_groups()[0]
+    def ident(g):
+        try:
+            return kf.get_string(g, "Id")
+        except GLib.Error:                             # groupe sans Id : pas le nôtre
+            return None
+    mine = next((g for g in groups if ident(g) == CALLS_ID), None)
+    if on:
+        if mine is None:
+            n = 0
+            while "sip-%02d" % n in groups:
+                n += 1
+            mine = "sip-%02d" % n
+        for k, v in (("Id", CALLS_ID), ("Host", acc["sip_domain"]), ("User", acc["sip_user"]),
+                     ("DisplayName", ""), ("Protocol", acc.get("sip_transport", "udp").upper()), ("Proxy", "")):
+            kf.set_string(mine, k, v)
+        kf.set_integer(mine, "Port", int(acc.get("sip_port", 5060)))
+        kf.set_integer(mine, "LocalPort", 0)
+        kf.set_integer(mine, "MediaEncryption", 0)
+        for k, v in (("AutoConnect", True), ("DirectMode", False), ("CanTel", True)):
+            kf.set_boolean(mine, k, v)
+        _calls_secret(acc, acc["sip_password"])
+    elif mine is not None:
+        kf.remove_group(mine)
+        try:
+            _calls_secret(acc, None)
+        except GLib.Error:
+            pass
+    else:
+        return
+    os.makedirs(os.path.dirname(CALLS_CFG), exist_ok=True)
+    kf.save_to_file(CALLS_CFG)
+    # Appels lit ses comptes au démarrage : on relance son service (il revient seul au besoin).
+    subprocess.run(["systemctl", "--user", "restart", "calls-daemon.service"], capture_output=True, timeout=15)
+
+
 class NodeClient:
     def __init__(self, host):
         self.host = host
@@ -1194,6 +1268,10 @@ if pj:
         def onIncomingCall(self, prm):
             call = _Call(self.sip, self, prm.callId)
             op = pj.CallOpParam()
+            if self.sip.native:                            # proxy : c est Appels qui sonne, pas nous
+                op.statusCode = 480
+                call.hangup(op)
+                return
             if self.sip.call is not None:                  # un appel à la fois
                 op.statusCode = 486
                 call.hangup(op)
@@ -1211,6 +1289,7 @@ class PjSip:
     def __init__(self, on_reg, on_call, on_message):
         self.on_reg, self.on_call, self.on_message = on_reg, on_call, on_message
         self.ep = self.acc = self.call = None
+        self.native = False                 # proxy : les appels entrants vont à l appli Appels
         self.domain = ""
         self.buddies = {}
         self.timer = 0
@@ -1312,6 +1391,8 @@ class PjSip:
 
 
 class DemoSip:
+    native = False                      # comme PjSip : proxy vers l appli Appels
+
     def __init__(self, on_reg, on_call, on_message):
         self.on_reg, self.on_call, self.on_message = on_reg, on_call, on_message
         self.in_call = False
@@ -2131,6 +2212,15 @@ class NodeUi:
         self.a_theme.connect("notify::selected", lambda r, _p: self.set_theme(THEMES[r.get_selected()][0]))
         grp.add(self.a_theme)
         box.append(grp)
+        grp = Adw.PreferencesGroup(title="Proxy", description="Le numéro du banc dans les applis du téléphone : "
+                                   "les appels sonnent dans Appels, les SMS arrivent en notification.")
+        self.a_natif = Adw.SwitchRow(title="Applis du téléphone", subtitle="inactif")
+        self.a_natif_quiet = True
+        self.a_natif.set_active(bool(self.settings.get("natif")))
+        self.a_natif_quiet = False
+        self.a_natif.connect("notify::active", lambda r, _p: self.set_natif(r.get_active()))
+        grp.add(self.a_natif)
+        box.append(grp)
         box.append(Gtk.Label(label="Network Monitor " + VERSION, css_classes=["dim-label", "caption"]))
         return self._scroll(box)
 
@@ -2154,6 +2244,39 @@ class NodeUi:
             self.toast("Sortie : %s" % TRUNKS[d["trunk"]] if d and d.get("trunk") == choice
                        else "Sortie inchangée : %s" % (err or (d or {}).get("err") or "refus du nœud"))
         self._in_thread(lambda: node.trunk(choice), done)
+
+    def set_natif(self, on):
+        """Le proxy : le compte du banc passe dans l appli Appels (ou en revient)."""
+        if self.a_natif_quiet:
+            return
+        if on and not self.account:
+            self.toast("Il faut d'abord un compte sur un nœud")
+            return self._natif_shown(False)
+        acc = self.account or self.settings.get("natif_compte")
+        if self.demo or not acc:
+            self.sip.native = on
+            return self._natif_shown(on)
+        self.a_natif.set_sensitive(False)
+
+        def done(_r, err):
+            self.a_natif.set_sensitive(True)
+            if err:
+                self.toast("Proxy : %s" % err)
+                return self._natif_shown(not on)
+            self.sip.native = on
+            self.settings["natif"] = on
+            self.settings["natif_compte"] = acc if on else None     # pour le retirer même après « Quitter »
+            save_settings(self.settings)
+            self._natif_shown(on)
+            self.toast("Appels du banc dans l'appli Appels" if on else "Appels du banc de retour dans cette appli")
+        self._in_thread(lambda: calls_proxy(acc, on), done)
+
+    def _natif_shown(self, on):
+        self.a_natif_quiet = True
+        self.a_natif.set_active(on)
+        self.a_natif_quiet = False
+        self.a_natif.set_subtitle("actif : appels dans Appels, SMS en notification" if on else "inactif")
+        return False
 
     def apply_theme(self, key):
         """Applique le thème, rend son rang dans THEMES."""
@@ -2252,6 +2375,11 @@ class NodeUi:
 
     def on_message(self, peer, text):
         self._bubble(peer, text, out=False)
+        if self.sip.native and not self.demo:           # proxy : une notification du téléphone
+            n = Gio.Notification.new("SMS de %s" % peer)
+            n.set_body(text)
+            n.set_priority(Gio.NotificationPriority.HIGH)
+            self.get_application().send_notification(None, n)
         if not self.m_to.get_text():
             self.m_to.set_text(peer)
         if self.tabs.get_visible_child_name() != "messages":
@@ -2394,6 +2522,7 @@ class Window(NodeUi, Adw.ApplicationWindow):
         self.call_since = 0
         self._frame_cls, self._frame_urls = frame_source_cls, frames_urls
         self.sip = (DemoSip if demo else PjSip)(self.on_reg, self.on_call, self.on_message)
+        self.sip.native = bool(self.settings.get("natif")) and not demo     # le proxy, tel qu on l a laissé
 
         self.stack = Swiper(on_change=lambda *_: self._frames_pin())
         for name, title, page in (("cell", "Cellule", self._page_cell()), ("signal", "Signal", self._page_signal()),
