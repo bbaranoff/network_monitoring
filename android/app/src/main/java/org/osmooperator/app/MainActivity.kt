@@ -282,6 +282,11 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.node_prev).setOnClickListener { nodeStep(-1) }
         findViewById<Button>(R.id.node_next).setOnClickListener { nodeStep(1) }
         findViewById<Button>(R.id.tab_messages).setOnClickListener { show("messages") }
+        findViewById<Button>(R.id.tab_proxy).setOnClickListener { show("proxy") }
+        findViewById<EditText>(R.id.proxy_dest).setText(prefs.getString("proxy_dest", "100101"))
+        findViewById<Button>(R.id.btn_proxy_on).setOnClickListener { proxy(true) }
+        findViewById<Button>(R.id.btn_proxy_off).setOnClickListener { proxy(false) }
+        if (Proxy.enabled(this)) startForegroundService(Intent(this, ProxyService::class.java))
         listOf(R.id.btn_theme0, R.id.btn_theme1, R.id.btn_theme2).forEachIndexed { i, id ->
             findViewById<Button>(id).setOnClickListener {
                 if (prefs.getInt("theme", 0) != i) { prefs.edit().putInt("theme", i).apply(); recreate() }
@@ -472,6 +477,8 @@ class MainActivity : Activity() {
         vis(R.id.panel_log, name == "radio" && radioPage == "log")
         vis(R.id.panel_node, name == "node")
         vis(R.id.panel_account, name == "account")
+        vis(R.id.panel_proxy, name == "proxy")
+        if (name == "proxy") proxyNote()
         vis(R.id.nav_radio, name == "radio")
         vis(R.id.nav_node, name == "node")
         listOf("cell" to R.id.sub_cell, "frames" to R.id.sub_frames, "log" to R.id.sub_log).forEach { (k, id) ->
@@ -525,8 +532,9 @@ class MainActivity : Activity() {
         modeState.text = "Mode : ${listOf("Basique", "Medium", "Expert")[m]}"
         vis(R.id.tab_radio, m >= 1)
         vis(R.id.tab_node, m >= 1)
+        vis(R.id.tab_proxy, m >= 1)
         vis(R.id.panel_trunk, m == 2)
-        if (m == 0 && (tab == "radio" || tab == "node")) show("phone") else show(tab)
+        if (m == 0 && (tab == "radio" || tab == "node" || tab == "proxy")) show("phone") else show(tab)
     }
 
     private fun tick() {
@@ -776,6 +784,7 @@ class MainActivity : Activity() {
         val keepNode = host
         val keepMode = mode
         val keepTheme = prefs.getInt("theme", 0)
+        if (Proxy.enabled(this)) proxy(false)                    // no account, no proxy
         prefs.edit().clear().putString("node", keepNode).putInt("mode", keepMode).putInt("theme", keepTheme).apply()
         online = "Hors ligne"
         show("phone")
@@ -816,6 +825,54 @@ class MainActivity : Activity() {
         log("SMS à $num : $body")
         bubble(num, body, true)
         msgText.setText("")
+    }
+
+    // ── The proxy: the SIM of this phone, lent to the bench (Proxy.kt) ───────
+    private val PROXY_PERMS = arrayOf(
+        Manifest.permission.RECEIVE_SMS, Manifest.permission.SEND_SMS,
+        Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_CALL_LOG
+    ) + (if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else emptyArray())
+
+    private fun proxyNote(extra: String = "") {
+        val st = findViewById<TextView>(R.id.proxy_state)
+        val on = Proxy.enabled(this)
+        st.text = (if (extra.isEmpty()) "" else "$extra\n") +
+            (if (on) "Proxy ACTIF : les SMS de la SIM vont à ${prefs.getString("proxy_dest", "")} sur le banc."
+            else "Proxy inactif.")
+        if (!on || host.isEmpty()) return
+        bg({ Proxy.call(this, "/proxy", null) ?: JSONObject() }) { d, _ ->
+            if (d != null && d.has("actif") && Proxy.enabled(this))
+                st.text = "${st.text}\nNœud : ${if (d.optBoolean("actif")) "proxy vu (compte ${d.optString("user")})" else "pas encore vu"} · ${d.optInt("attente")} SMS en attente"
+        }
+    }
+
+    private fun proxy(on: Boolean) {
+        if (on) {
+            if (!enrolled || host.isEmpty()) return proxyNote("Il faut d'abord un compte sur un nœud (onglet Tél.).")
+            val missing = PROXY_PERMS.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+            if (missing.isNotEmpty()) {
+                requestPermissions(missing.toTypedArray(), 2)
+                return proxyNote("Autorisez les SMS et le téléphone, puis touchez Activer de nouveau.")
+            }
+            val dest = findViewById<EditText>(R.id.proxy_dest).text.toString().trim().replace(" ", "")
+            if (dest.isEmpty()) return proxyNote("Indiquez le numéro du banc qui reçoit les SMS.")
+            prefs.edit().putString("proxy_dest", dest).putBoolean("proxy", true).apply()
+            bg({ Proxy.announce(this, true) ?: JSONObject() }) { d, _ ->
+                if (d == null || !d.optBoolean("ok")) {
+                    prefs.edit().putBoolean("proxy", false).apply()
+                    proxyNote("Le nœud a refusé : ${d?.optString("error")?.ifEmpty { "il ne répond pas (osmo-inscription, port 8088)" }}")
+                } else {
+                    startForegroundService(Intent(this, ProxyService::class.java))
+                    log("Proxy activé vers $dest")
+                    proxyNote()
+                }
+            }
+        } else {
+            prefs.edit().putBoolean("proxy", false).apply()      // the service sees it, withdraws and stops
+            bg({ Proxy.announce(this, false) ?: JSONObject() }) { _, _ -> }
+            log("Proxy désactivé")
+            proxyNote()
+        }
     }
 
     // ── Forcing 2G ───────────────────────────────────────────────────────────
