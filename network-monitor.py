@@ -1624,6 +1624,9 @@ TRUNKS = {"zadarma": "Zadarma", "dongle": "Dongle"}
 #   Medium  : + Radio (cellule, signal, voisines) et Nœud (spectres, services).
 #   Expert  : + trames, journal, console VTY, choix de la sortie.
 MODES = ("Basique", "Medium", "Expert")
+# (clé des réglages, libellé, schéma libadwaita) ; le premier est le défaut.
+THEMES = (("clair", "Clair", Adw.ColorScheme.FORCE_LIGHT), ("sombre", "Sombre", Adw.ColorScheme.FORCE_DARK),
+          ("systeme", "Comme le système", Adw.ColorScheme.DEFAULT))
 MODE_RADIO = (None, ("cell", "signal", "neighbors", "frames", "log"), ("cell", "signal", "neighbors", "frames", "log"))
 MODE_NODE = (None, ("bts", "ms", "services"), ("bts", "ms", "services", "console"))
 
@@ -2014,6 +2017,11 @@ class NodeUi:
                                    model=Gtk.StringList.new(list(MODES)))
         self.a_mode.connect("notify::selected", lambda r, _p: self.set_mode(r.get_selected()))
         grp.add(self.a_mode)
+        # Clair par défaut ; le choix est gardé dans les réglages.
+        self.a_theme = Adw.ComboRow(title="Thème", model=Gtk.StringList.new([t for _k, t, _s in THEMES]))
+        self.a_theme.set_selected(self.apply_theme(self.settings.get("theme", "clair")))
+        self.a_theme.connect("notify::selected", lambda r, _p: self.set_theme(THEMES[r.get_selected()][0]))
+        grp.add(self.a_theme)
         box.append(grp)
         box.append(Gtk.Label(label="Network Monitor " + VERSION, css_classes=["dim-label", "caption"]))
         return self._scroll(box)
@@ -2038,6 +2046,18 @@ class NodeUi:
             self.toast("Sortie : %s" % TRUNKS[d["trunk"]] if d and d.get("trunk") == choice
                        else "Sortie inchangée : %s" % (err or (d or {}).get("err") or "refus du nœud"))
         self._in_thread(lambda: node.trunk(choice), done)
+
+    def apply_theme(self, key):
+        """Applique le thème, rend son rang dans THEMES."""
+        i = next((n for n, (k, _t, _s) in enumerate(THEMES) if k == key), 0)
+        Adw.StyleManager.get_default().set_color_scheme(THEMES[i][2])
+        return i
+
+    def set_theme(self, key):
+        self.apply_theme(key)
+        if not self.demo and self.settings.get("theme") != key:
+            self.settings["theme"] = key
+            save_settings(self.settings)
 
     def set_mode(self, mode):
         mode = max(0, min(len(MODES) - 1, mode))
@@ -2154,8 +2174,8 @@ CSS = b"""
 .proto { font-size: 10px; font-weight: 800; letter-spacing: 0.04em; padding: 1px 7px; border-radius: 99px;
          color: white; background-color: alpha(currentColor, 0.15); }
 .dirchip { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px; }
-.dirchip.dir-ul { color: #f6d32d; background-color: alpha(#e5a50a, 0.18); }
-.dirchip.dir-dl { color: #99c1f1; background-color: alpha(#3584e4, 0.20); }
+.dirchip.dir-ul { color: @warning_color; background-color: alpha(#e5a50a, 0.18); }
+.dirchip.dir-dl { color: @accent_color; background-color: alpha(#3584e4, 0.18); }
 .fcat { font-size: 12px; padding: 2px 10px; min-height: 26px; border-radius: 99px; }
 .frame-row.kind-bcch { border-left-color: #77767b; background-color: alpha(#77767b, 0.06); }
 .proto.kind-bcch { background-color: #77767b; }
