@@ -1774,6 +1774,10 @@ class NodeUi:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.m_to = Adw.EntryRow(title="À (numéro)", input_purpose=Gtk.InputPurpose.PHONE)
         top = Adw.PreferencesGroup(margin_top=12, margin_start=12, margin_end=12)
+        wipe = Gtk.Button(icon_name="user-trash-symbolic", css_classes=["flat"], valign=Gtk.Align.CENTER,
+                          tooltip_text="Effacer les appels et conversations")
+        wipe.connect("clicked", lambda *_: self.on_wipe())
+        self.m_to.add_suffix(wipe)
         top.add(self.m_to)
         box.append(top)
         self.m_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12, margin_bottom=12,
@@ -1793,6 +1797,22 @@ class NodeUi:
         bar.append(send)
         box.append(bar)
         return Adw.Clamp(maximum_size=640, child=box)
+
+    def on_wipe(self):
+        """Les conversations, le numéro saisi, et les appels / SMS du journal."""
+        while (c := self.m_list.get_first_child()) is not None:
+            self.m_list.remove(c)
+        self.m_stack.set_visible_child_name("empty")
+        self.m_to.set_text("")
+        self.m_text.set_text("")
+        if self.call_state is None:
+            self.number.set_text("")
+        for i in reversed(range(self.events.get_n_items())):
+            t = self.events.get_item(i).text.lower()
+            if any(k in t for k in ("appel", "sms", "message")):
+                self.events.remove(i)
+        self.msg_page.set_needs_attention(False)
+        self.toast("Appels et conversations effacés")
 
     def on_send(self, _w):
         num, text = self.m_to.get_text().replace(" ", ""), self.m_text.get_text()
@@ -1894,7 +1914,9 @@ class NodeUi:
             self.n_procs.remove(r)
         self.n_proc_rows = []
         if err or not d or "procs" not in d:
-            self.n_procs.set_description("nœud injoignable sur le port %d : %s" % (PORT_API, err or d))
+            # échappé : « <urlopen error …> » serait lu comme du balisage Pango
+            self.n_procs.set_description(GLib.markup_escape_text(
+                "Services indisponibles : osmo-reglages ne répond pas sur le port %d (%s)" % (PORT_API, err or d)))
             return
         self.n_procs.set_description("%d processus · %s" % (len(d["procs"]), self.node.host))
         for p in d["procs"]:
@@ -1959,6 +1981,9 @@ class NodeUi:
                                   halign=Gtk.Align.CENTER, sensitive=False)
         self.a_leave.connect("clicked", self.on_leave)
         box.append(self.a_leave)
+        wipe = Gtk.Button(label="Effacer les appels et conversations", css_classes=["pill"], halign=Gtk.Align.CENTER)
+        wipe.connect("clicked", lambda *_: self.on_wipe())
+        box.append(wipe)
         grp = Adw.PreferencesGroup(title="Affichage")
         self.a_mode = Adw.ComboRow(title="Mode", subtitle="ce que l'appli montre",
                                    model=Gtk.StringList.new(list(MODES)))
