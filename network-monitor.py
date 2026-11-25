@@ -552,8 +552,15 @@ class FrameSource:
         try:
             conn = session.websocket_connect_finish(res)
         except GLib.Error as e:
-            self.on_status("dashboard injoignable (%s) : %s" % (url, e.message), False)
-            self._retry()
+            if not self.stopped:
+                self.on_status("dashboard injoignable (%s) : %s" % (url, e.message), False)
+                self._retry()
+            return
+        if self.stopped:
+            # arrêtée pendant la poignée de main (le nœud a été choisi entre-temps) :
+            # sans ça, deux sources vivent, deux tshark écrivent /tmp/capture.pcap
+            # côté dashboard et se coupent l un l autre toutes les 4 s.
+            conn.close(Soup.WebsocketCloseCode.NORMAL, None)
             return
         self.conn, self.url = conn, url
         conn.set_max_incoming_payload_size(4 << 20)
@@ -738,6 +745,44 @@ class FrameItem(GObject.Object):
         self.haystack = " ".join((self.proto, self.direction, self.where, self.info, self.detail,
                                   d.get("src") or "", d.get("dst") or "")).lower()
         self.kind = frame_kind(d, self.proto, l3)
+        self.title, self.meta = frame_title(d, self.info, rr), frame_meta(self)
+        self.full = re.sub(r"^(\s*\([^)]*\))+\s*", "", self.info).strip()
+        low = (self.info + " " + self.title).lower()
+        self.cat = ("meas" if self.kind == "mon" or "measurement" in low
+                    else "bcast" if self.kind == "bcch"
+                    else "sms" if self.kind == "sms"
+                    else "core" if self.kind in ("core", "lte")
+                    else "sig")
+        self.key = any(k in low for k in KEY_MESSAGES)
+
+
+# Ce qu on veut voir passer sans le chercher : liseré autour de la ligne.
+KEY_MESSAGES = ("location updating", "measurement report", "cm service", "paging response", "setup",
+                "connect", "disconnect", "release", "authentication", "ciphering mode", "identity",
+                "imsi detach", "assignment", "handover", "attach", "tracking area", "cp-data")
+FAMILY = {"bcch": "BCCH", "lapdm": "LAPDm", "mm": "MM", "rr": "RR", "cc": "CC", "sms": "SMS", "core": "CŒUR",
+          "lte": "LTE", "rrc": "RRC", "nas": "NAS", "mon": "MESURE", "other": "AUTRE"}
+
+
+def frame_title(d, info, rr):
+    """Le nom du message, comme on le dit : « Location Updating Request »,
+    pas « (SDCCH) (MM) Location Updating Request » ni « RR 0x15 »."""
+    if info.lower().startswith("mon:"):
+        return "Mesure de cellule"
+    t = re.sub(r"^(\s*\([^)]*\))+\s*", "", info).strip()
+    if (not t or t.startswith("RR 0x")) and rr and not rr.startswith("RR 0x"):
+        t = rr
+    if d.get("cc") and not t:
+        t = d["cc"]
+    t = t.split(", ")[0] if len(t) > 48 and ", " in t else t
+    return t or (d.get("protocol") or "Trame")
+
+
+def frame_meta(it):
+    """La ligne sous le titre : où et quand, sans le sens (il a sa pastille)."""
+    info = it.info
+    extra = info[4:].strip() if info.lower().startswith("mon:") else ""
+    return "  ·  ".join(x for x in (it.where, extra) if x)
 
 
 def frame_kind(d, proto, l3):
@@ -1268,6 +1313,13 @@ class Spectrum(Gtk.DrawingArea):
             self.queue_draw()
             return
         psd, n = d["psd"], len(d["psd"])
+        if max(psd) - min(psd) < 0.5:                       # plancher plat : la FIFO ne reçoit rien
+            self.trace = []
+            self.message = ("Le mobile n'émet pas (au repos) : le montant s'anime pendant un appel, "
+                            "un SMS ou un Location Update." if (d.get("label") or "").startswith("MS")
+                            else "%s : aucun signal (source muette)" % (d.get("label") or "source"))
+            self.queue_draw()
+            return
         # W colonnes : le maximum de chaque groupe (un pic étroit ne disparaît pas)
         cols = [max(psd[i * n // self.W:max(i * n // self.W + 1, (i + 1) * n // self.W)]) for i in range(self.W)]
         s = sorted(cols)
@@ -1315,9 +1367,20 @@ class Spectrum(Gtk.DrawingArea):
         if not self.trace:
             cr.set_source_rgba(1, 1, 1, 0.6)
             cr.set_font_size(13)
-            e = cr.text_extents(self.message)
-            cr.move_to((w - e.width) / 2, th / 2)
-            cr.show_text(self.message)
+            lines, cur = [], ""                             # au mot près, dans la largeur
+            for word in self.message.split():
+                t = (cur + " " + word).strip()
+                if cur and cr.text_extents(t).width > w - 32:
+                    lines.append(cur); cur = word
+                else:
+                    cur = t
+            lines.append(cur)
+            y = th / 2 - (len(lines) - 1) * 9
+            for line in lines:
+                e = cr.text_extents(line)
+                cr.move_to((w - e.width) / 2, y)
+                cr.show_text(line)
+                y += 18
             return
         # la grille
         cr.set_line_width(1)
@@ -1356,14 +1419,23 @@ class Spectrum(Gtk.DrawingArea):
         # le pic et les étiquettes
         pi, pv = self.peak
         px, f0, f1 = w * pi / (self.W - 1), self.span[0], self.span[1]
-        cr.set_source_rgba(1, 1, 1, 0.9)
-        cr.arc(px, ys[pi], 3.5, 0, 2 * math.pi)
+        green = (0.341, 0.890, 0.537)                   # #57e389, le vert GNOME
+        cr.set_source_rgb(*green)
+        cr.arc(px, ys[pi], 4, 0, 2 * math.pi)
         cr.fill()
         txt = "%+.0f kHz · %.0f dB" % (f0 + (f1 - f0) * pi / (self.W - 1), pv)
-        cr.set_font_size(11)
+        cr.set_font_size(12)
+        cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
         e = cr.text_extents(txt)
-        cr.move_to(max(4, min(w - e.width - 4, px - e.width / 2)), max(12, ys[pi] - 8))
+        # sous le titre de la source (en haut à droite), jamais par-dessus
+        tx, ty = max(6, min(w - e.width - 10, px - e.width / 2)), max(40, ys[pi] - 12)
+        self._round(cr, tx - 6, ty - e.height - 5, e.width + 12, e.height + 10, 8)
+        cr.set_source_rgba(0.02, 0.10, 0.05, 0.85)
+        cr.fill()
+        cr.set_source_rgb(*green)
+        cr.move_to(tx, ty)
         cr.show_text(txt)
+        cr.select_font_face("Sans")
         cr.set_source_rgba(1, 1, 1, 0.75)
         cr.move_to(8, h - 8); cr.show_text("%+.0f kHz" % f0)
         t = "%+.0f kHz" % f1
@@ -1439,10 +1511,9 @@ class Swiper(Gtk.Box):
     page et les points au-dessus ; les chevrons pour qui n a pas d écran tactile."""
 
     def __init__(self, on_change=None):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
         self.names, self.titles, self.on_change = [], [], on_change
         self.all = []                    # (nom, titre, page) : tout ce qui existe, montré ou non
-        self.carousel = Adw.Carousel(vexpand=True, allow_scroll_wheel=False, spacing=12)
         head = Gtk.CenterBox(margin_top=6, margin_start=6, margin_end=6)
         prev = Gtk.Button(icon_name="go-previous-symbolic", css_classes=["flat", "circular"])
         nxt = Gtk.Button(icon_name="go-next-symbolic", css_classes=["flat", "circular"])
@@ -1450,27 +1521,47 @@ class Swiper(Gtk.Box):
         nxt.connect("clicked", lambda *_: self.step(1))
         mid = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.title = Gtk.Label(css_classes=["heading"])
+        self.dots = Adw.CarouselIndicatorDots()
         mid.append(self.title)
-        mid.append(Adw.CarouselIndicatorDots(carousel=self.carousel))
+        mid.append(self.dots)
         head.set_start_widget(prev); head.set_center_widget(mid); head.set_end_widget(nxt)
         self.append(head)
-        self.append(self.carousel)
+        self.carousel = None
+        self._new_carousel()
+
+    def _new_carousel(self):
+        if self.carousel is not None:
+            self.remove(self.carousel)
+        self.carousel = Adw.Carousel(vexpand=True, hexpand=True, allow_scroll_wheel=False, spacing=12)
         self.carousel.connect("page-changed", self._changed)
+        self.dots.set_carousel(self.carousel)
+        self.append(self.carousel)
 
     def restrict(self, names):
-        """Ne montre que ces pages (les modes) ; l ordre d origine est gardé."""
-        for n, _t, w in self.all:
-            if n in self.names:
-                self.carousel.remove(w)
-        self.names, self.titles = [], []
-        for n, t, w in self.all:
-            if n in names:
-                self.names.append(n); self.titles.append(t)
-                self.carousel.append(w)
+        """Ne montre que ces pages (les modes) ; l ordre d origine est gardé.
+        Jamais de carousel.remove() : Adw.Carousel garde à la place de la page
+        retirée une image figée qui rétrécit en s animant, et sur un onglet
+        caché l animation ne finit pas (spectres tassés en colonnes étroites).
+        On vide l ancien carrousel et on en monte un neuf."""
+        want = [(n, t, w) for n, t, w in self.all if n in names]
+        if [n for n, _t, _w in want] == self.names:
+            return
+        old = self.carousel
+        for _n, _t, w in self.all:
+            if w.get_parent() is not None:
+                w.unparent() if w.get_parent() is not old else old.remove(w)
+        self._new_carousel()
+        for _n, _t, w in want:
+            self.carousel.append(w)
+        self.names, self.titles = [n for n, _t, _w in want], [t for _n, t, _w in want]
         if self.names:
             self.title.set_text(self.titles[0])
 
     def add(self, name, title, widget):
+        # Une page = toute la largeur. Sans enfant qui s étire, Adw.Carousel se
+        # contente de sa largeur naturelle : en mode Medium (pas de console),
+        # les spectres tombaient en colonnes étroites côte à côte.
+        widget.set_hexpand(True)
         self.all.append((name, title, widget))
         self.names.append(name); self.titles.append(title)
         self.carousel.append(widget)
@@ -1508,7 +1599,7 @@ TRUNKS = {"zadarma": "Zadarma", "dongle": "Dongle"}
 #   Medium  : + Radio (cellule, signal, voisines) et Nœud (spectres, services).
 #   Expert  : + trames, journal, console VTY, choix de la sortie.
 MODES = ("Basique", "Medium", "Expert")
-MODE_RADIO = (None, ("cell", "signal", "neighbors"), ("cell", "signal", "neighbors", "frames", "log"))
+MODE_RADIO = (None, ("cell", "signal", "neighbors", "frames", "log"), ("cell", "signal", "neighbors", "frames", "log"))
 MODE_NODE = (None, ("bts", "ms", "services"), ("bts", "ms", "services", "console"))
 
 KEYS = (("1", ""), ("2", "ABC"), ("3", "DEF"), ("4", "GHI"), ("5", "JKL"), ("6", "MNO"),
@@ -1989,36 +2080,44 @@ CSS = b"""
 /* Les trames : une couleur par famille (fond de la ligne, teinte legere qui
    passe en clair comme en sombre) et le sens sur le bord gauche - orange le
    mobile parle (UL), bleu le reseau parle (DL). Le badge reprend la teinte. */
-.frame-row { padding: 6px 10px 6px 8px; border-bottom: 1px solid alpha(currentColor, 0.1);
+.frame-row { padding: 8px 12px 8px 10px; border-bottom: 1px solid alpha(currentColor, 0.07);
              border-left: 4px solid transparent; }
-.frame-row.dir-ul { border-left-color: #e5a50a; }
-.frame-row.dir-dl { border-left-color: #3584e4; }
-.frame-row.kind-bcch  { background-color: alpha(#77767b, 0.22); }
-.frame-row.kind-lapdm { background-color: alpha(#3584e4, 0.38); }
-.frame-row.kind-mm    { background-color: alpha(#9141ac, 0.40); }
-.frame-row.kind-rr    { background-color: alpha(#26a269, 0.40); }
-.frame-row.kind-cc    { background-color: alpha(#e66100, 0.42); }
-.frame-row.kind-sms   { background-color: alpha(#f5c211, 0.45); }
-.frame-row.kind-core  { background-color: alpha(#2190a4, 0.40); }
-.frame-row.kind-lte   { background-color: alpha(#cdab8f, 0.42); }
-.frame-row.kind-rrc   { background-color: alpha(#c061cb, 0.42); }
-.frame-row.kind-nas   { background-color: alpha(#ed333b, 0.40); }
-.frame-row.kind-mon   { opacity: 0.7; }
-.proto { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 6px;
-         background-color: alpha(currentColor, 0.15); }
-.proto.kind-bcch  { background-color: alpha(#77767b, 0.55); }
-.proto.kind-lapdm { background-color: alpha(#3584e4, 0.75); }
-.proto.kind-mm    { background-color: alpha(#9141ac, 0.75); }
-.proto.kind-rr    { background-color: alpha(#26a269, 0.75); }
-.proto.kind-cc    { background-color: alpha(#e66100, 0.80); }
-.proto.kind-sms   { background-color: alpha(#f5c211, 0.80); }
-.proto.kind-core  { background-color: alpha(#2190a4, 0.75); }
-.proto.kind-lte   { background-color: alpha(#cdab8f, 0.80); }
-.proto.kind-rrc   { background-color: alpha(#c061cb, 0.80); }
-.proto.kind-nas   { background-color: alpha(#ed333b, 0.75); }
-.frame-text { font-family: monospace; font-size: 11px; }
-label.dir-ul { color: #e5a50a; font-weight: 700; }   /* l etiquette seule : la ligne garde sa couleur de texte */
-label.dir-dl { color: #3584e4; font-weight: 700; }
+.frame-title { font-size: 15px; font-weight: 700; }
+.frame-row.kind-bcch .frame-title, .frame-row.kind-mon .frame-title { font-weight: 500; opacity: 0.8; }
+.frame-row.key { box-shadow: inset 0 0 0 1px alpha(@accent_color, 0.35); }
+.frame-when { font-family: monospace; font-size: 11px; opacity: 0.6; }
+.frame-meta { font-size: 12px; opacity: 0.75; }
+.proto { font-size: 10px; font-weight: 800; letter-spacing: 0.04em; padding: 1px 7px; border-radius: 99px;
+         color: white; background-color: alpha(currentColor, 0.15); }
+.dirchip { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px; }
+.dirchip.dir-ul { color: #f6d32d; background-color: alpha(#e5a50a, 0.18); }
+.dirchip.dir-dl { color: #99c1f1; background-color: alpha(#3584e4, 0.20); }
+.fcat { font-size: 12px; padding: 2px 10px; min-height: 26px; border-radius: 99px; }
+.frame-row.kind-bcch { border-left-color: #77767b; background-color: alpha(#77767b, 0.06); }
+.proto.kind-bcch { background-color: #77767b; }
+.frame-row.kind-lapdm { border-left-color: #3584e4; background-color: alpha(#3584e4, 0.14); }
+.proto.kind-lapdm { background-color: #3584e4; }
+.frame-row.kind-mm { border-left-color: #9141ac; background-color: alpha(#9141ac, 0.14); }
+.proto.kind-mm { background-color: #9141ac; }
+.frame-row.kind-rr { border-left-color: #26a269; background-color: alpha(#26a269, 0.14); }
+.proto.kind-rr { background-color: #26a269; }
+.frame-row.kind-cc { border-left-color: #e66100; background-color: alpha(#e66100, 0.14); }
+.proto.kind-cc { background-color: #e66100; }
+.frame-row.kind-sms { border-left-color: #f5c211; background-color: alpha(#f5c211, 0.14); }
+.proto.kind-sms { background-color: #f5c211; }
+.frame-row.kind-core { border-left-color: #2190a4; background-color: alpha(#2190a4, 0.14); }
+.proto.kind-core { background-color: #2190a4; }
+.frame-row.kind-lte { border-left-color: #cdab8f; background-color: alpha(#cdab8f, 0.14); }
+.proto.kind-lte { background-color: #cdab8f; }
+.frame-row.kind-rrc { border-left-color: #c061cb; background-color: alpha(#c061cb, 0.14); }
+.proto.kind-rrc { background-color: #c061cb; }
+.frame-row.kind-nas { border-left-color: #ed333b; background-color: alpha(#ed333b, 0.14); }
+.proto.kind-nas { background-color: #ed333b; }
+.frame-row.kind-mon { border-left-color: #5e5c64; background-color: alpha(#5e5c64, 0.06); }
+.proto.kind-mon { background-color: #5e5c64; }
+.frame-row.kind-other { border-left-color: #77767b; background-color: alpha(#77767b, 0.06); }
+.proto.kind-other { background-color: #77767b; }
+.proto.kind-sms { color: #241f31; }
 .hero { background-image: linear-gradient(160deg, alpha(@accent_bg_color, 0.20), alpha(@accent_bg_color, 0.03)); }
 .dial-entry { font-size: 34px; font-weight: 300; background: none; box-shadow: none; outline: none; }
 .dial-key { font-size: 26px; min-width: 76px; min-height: 76px; border-radius: 38px; }
@@ -2232,6 +2331,22 @@ class Window(NodeUi, Adw.ApplicationWindow):
         clear.connect("clicked", lambda *_: (self.frames.remove_all(), self.frames_pending.clear(), self._render_frames_status()))
         bar.append(self.f_filter); bar.append(self.f_follow); bar.append(self.f_pause); bar.append(clear)
         v.append(bar)
+        # Les familles en un geste : la diffusion (Paging, SI) noie le reste,
+        # « Signalisation » montre Location Update, appels, chiffrement…
+        cats = Gtk.Box(spacing=6)
+        self.f_cat, first = "all", None
+        self.f_cat_btn = {}
+        for key, label in (("all", "Tout"), ("sig", "Signalisation"), ("meas", "Mesures"),
+                           ("bcast", "Diffusion"), ("sms", "SMS"), ("core", "Cœur")):
+            b = Gtk.ToggleButton(label=label, css_classes=["fcat"], active=(key == "all"))
+            if first:
+                b.set_group(first)
+            first = first or b
+            b.connect("toggled", self._on_frames_cat, key)
+            self.f_cat_btn[key] = b
+            cats.append(b)
+        v.append(Gtk.ScrolledWindow(child=cats, vscrollbar_policy=Gtk.PolicyType.NEVER,
+                                    hscrollbar_policy=Gtk.PolicyType.EXTERNAL))
         self.f_model = Gtk.FilterListModel(model=self.frames, filter=self.f_custom)
         factory = Gtk.SignalListItemFactory()
         factory.connect("setup", self._frame_setup)
@@ -2301,42 +2416,54 @@ class Window(NodeUi, Adw.ApplicationWindow):
             self._frames_pin()
         self._render_frames_status()
 
+    def _on_frames_cat(self, btn, key):
+        if btn.get_active():
+            self.f_cat = key
+            self.f_custom.changed(Gtk.FilterChange.DIFFERENT)
+
     def _frame_match(self, item):
+        if self.f_cat != "all" and item.cat != self.f_cat:
+            return False
         words = self.f_filter.get_text().lower().split()
         return all(w in item.haystack for w in words)
 
     def _frame_setup(self, _factory, li):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, css_classes=["frame-row"])
-        head = Gtk.Box(spacing=6)
-        box.when = Gtk.Label(xalign=0, css_classes=["monospace", "caption", "dim-label"])
-        box.proto = Gtk.Label(css_classes=["proto"])
-        box.dir = Gtk.Label(css_classes=["caption"])
-        box.where = Gtk.Label(xalign=1, hexpand=True, css_classes=["caption", "dim-label"], ellipsize=Pango.EllipsizeMode.END)
-        for w in (box.when, box.proto, box.dir, box.where):
-            head.append(w)
-        box.info = Gtk.Label(xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, lines=2,
-                             ellipsize=Pango.EllipsizeMode.END, css_classes=["body"])
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, css_classes=["frame-row"])
+        top = Gtk.Box(spacing=8)
+        box.title = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END, css_classes=["frame-title"])
+        box.when = Gtk.Label(xalign=1, css_classes=["frame-when"])
+        top.append(box.title); top.append(box.when)
+        mid = Gtk.Box(spacing=6)
+        box.proto = Gtk.Label(css_classes=["proto"], valign=Gtk.Align.CENTER)
+        box.dir = Gtk.Label(css_classes=["dirchip"], valign=Gtk.Align.CENTER)
+        box.where = Gtk.Label(xalign=0, hexpand=True, css_classes=["frame-meta"], ellipsize=Pango.EllipsizeMode.END)
+        for w in (box.proto, box.dir, box.where):
+            mid.append(w)
         box.detail = Gtk.Label(xalign=0, css_classes=["caption", "dim-label"], ellipsize=Pango.EllipsizeMode.END)
-        box.append(head); box.append(box.info); box.append(box.detail)
+        box.append(top); box.append(mid); box.append(box.detail)
         li.set_child(box)
 
     def _frame_bind(self, _factory, li):
         box, it = li.get_child(), li.get_item()
+        box.title.set_text(it.title)
+        box.title.set_tooltip_text(it.info or None)
         box.when.set_text(it.when)
-        box.proto.set_text(it.proto)
+        box.proto.set_text(FAMILY.get(it.kind, it.proto))
+        box.proto.set_tooltip_text(it.proto)
         for k in KINDS:
             box.proto.remove_css_class("kind-" + k); box.remove_css_class("kind-" + k)
         box.proto.add_css_class("kind-" + it.kind); box.add_css_class("kind-" + it.kind)
-        box.dir.set_text({"UL": "↑ UL", "DL": "↓ DL"}.get(it.direction, it.direction))
-        for w in (box.dir, box):
-            w.remove_css_class("dir-ul"); w.remove_css_class("dir-dl")
+        (box.add_css_class if it.key else box.remove_css_class)("key")
+        box.dir.remove_css_class("dir-ul"); box.dir.remove_css_class("dir-dl")
         if it.direction == "UL":
-            box.dir.add_css_class("dir-ul"); box.add_css_class("dir-ul")
+            box.dir.set_text("↑ MS → réseau"); box.dir.add_css_class("dir-ul")
         elif it.direction == "DL":
-            box.dir.add_css_class("dir-dl"); box.add_css_class("dir-dl")
-        box.where.set_text(it.where)
-        box.info.set_text(it.info or "—")
-        box.detail.set_text(it.detail); box.detail.set_visible(bool(it.detail))
+            box.dir.set_text("↓ réseau → MS"); box.dir.add_css_class("dir-dl")
+        box.dir.set_visible(it.direction in ("UL", "DL"))
+        box.where.set_text(it.meta)
+        rest = it.full if it.full and it.full != it.title and not it.info.lower().startswith("mon:") else ""
+        detail = " · ".join(x for x in (rest, it.detail) if x)
+        box.detail.set_text(detail); box.detail.set_visible(bool(detail))
 
     def _on_frame_activate(self, _view, pos):
         it = self.f_model.get_item(pos)

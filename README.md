@@ -33,8 +33,8 @@ jamais l'Internet ouvert. `osmo-reglages.py` écoute sur 127.0.0.1 par
 défaut : le lancer avec `--bind <adresse du nœud>`.
 
 **Modes** (Compte → Affichage) : *Basique* (téléphone, messages, compte),
-*Medium* (+ cellule, signal, voisines, spectres, services), *Expert*
-(+ trames, journal, console VTY, choix de la sortie). `NETMON_MODE=expert`
+*Medium* (+ cellule, signal, voisines, trames, journal, spectres, services),
+*Expert* (+ console VTY, choix de la sortie). `NETMON_MODE=expert`
 le force ; `NETMON_NODE=192.168.1.20` donne le nœud sans passer par Compte.
 
 **Android** : `android/` est la même appli en Kotlin (SDK Linphone pour le
