@@ -51,6 +51,11 @@ la compilation Android.
 numéro 3000-3999 et son mot de passe SIP. « J'ai déjà un compte SIP » reste
 possible avec un compte existant.
 
+**Invitation par QR code** : `python3 tools/osmo-inscription.py --nouveau-qrcode PSEUDO`
+affiche un QR code (terminal et PNG) qui porte l'adresse du nœud, le pseudo et
+une invitation de 16 caractères. Dans l'appli : « Scanner le QR code » (caméra),
+« Image » sur postmarketOS (capture d'écran), ou coller le lien dans Invitation.
+
 ## Fichiers
 
 | fichier | rôle |

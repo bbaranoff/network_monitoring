@@ -36,6 +36,10 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.net.Uri
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -268,6 +272,7 @@ class MainActivity : Activity() {
         radioCells = findViewById(R.id.radio_cells)
 
         findViewById<Button>(R.id.btn_join).setOnClickListener { enrol() }
+        findViewById<Button>(R.id.btn_scan).setOnClickListener { scanQr() }
         findViewById<Button>(R.id.btn_direct).setOnClickListener { direct() }
         findViewById<Button>(R.id.btn_call).setOnClickListener { call() }
         btnAnswer.setOnClickListener { (core.currentCall ?: core.calls.firstOrNull())?.accept() }
@@ -716,13 +721,42 @@ class MainActivity : Activity() {
         radioCells.text = if (cells.isEmpty()) "Aucune cellule donnée par le modem." else sb.toString()
     }
 
+    // ── The invitation QR code ───────────────────────────────────────────────
+    // osmo-inscription.py --nouveau-qrcode PSEUDO shows a QR code that carries
+    //   osmo://inscription?noeud=<address>&pseudo=<pseudo>&code=<16 characters>
+    // Reading it is enough: the node, the pseudo and the invitation are in it.
+    private fun scanQr() {
+        val opts = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
+        try {
+            GmsBarcodeScanning.getClient(this, opts).startScan()
+                .addOnSuccessListener { b -> useInvitation(b.rawValue ?: "") }
+                .addOnFailureListener { e -> status.text = "Lecteur de QR code indisponible : ${e.message ?: e.javaClass.simpleName}" }
+        } catch (e: Exception) {
+            status.text = "Lecteur de QR code indisponible : ${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
+    private fun useInvitation(text: String) {
+        val uri = try { Uri.parse(text.trim()) } catch (e: Exception) { null }
+        val noeud = uri?.getQueryParameter("noeud") ?: ""
+        val code = uri?.getQueryParameter("code") ?: ""
+        if (uri == null || uri.scheme != "osmo" || uri.host != "inscription" || noeud.isEmpty() || code.isEmpty()) {
+            status.text = "Ce QR code n'est pas une invitation du nœud"
+            return
+        }
+        setNode(noeud)
+        uri.getQueryParameter("pseudo")?.takeIf { it.isNotEmpty() }?.let { user.setText(it) }
+        secret.setText(code)
+        if (user.text.isNotBlank()) enrol() else status.text = "Invitation lue : indiquez un pseudo, puis « S'inscrire »"
+    }
+
     // ── Enrolment ────────────────────────────────────────────────────────────
     private fun enrol() {
         val pseudo = user.text.toString().trim()
         val code = secret.text.toString().trim()
         val h = host
         if (h.isEmpty() || pseudo.isEmpty() || code.isEmpty()) {
-            status.text = "Il faut l'adresse du nœud (Compte), un pseudo et le code"
+            status.text = "Il faut l'adresse du nœud (Compte), un pseudo et l'invitation - ou scannez le QR code"
             return
         }
         status.text = "Inscription…"

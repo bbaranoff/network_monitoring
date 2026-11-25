@@ -45,6 +45,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import cairo
@@ -78,7 +79,7 @@ LOC_3GPP_LAC_CI = 1 << 0       # MM_MODEM_LOCATION_SOURCE_3GPP_LAC_CI (1 << 1 se
 ACT_5GNR = 1 << 15             # MM_MODEM_ACCESS_TECHNOLOGY_5GNR
 
 APP_ID = "org.osmocom.NetworkMonitor"
-VERSION = "0.5"
+VERSION = "0.6"
 HISTORY_S = 600          # 10 min d historique par mesure
 POLL_S = 2               # cadence de lecture
 FRAMES_MAX = 2000        # trames gardees a l ecran
@@ -1131,6 +1132,53 @@ def calls_proxy(acc, on):
     subprocess.run(["systemctl", "--user", "restart", "calls-daemon.service"], capture_output=True, timeout=15)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# L INVITATION PAR QR CODE
+#
+# osmo-inscription.py --nouveau-qrcode PSEUDO affiche un QR code qui porte
+#     osmo://inscription?noeud=<adresse>&pseudo=<pseudo>&code=<16 caractères>
+# Le lire suffit : rien à taper. Le lecteur est GStreamer + zbar (déjà dans
+# postmarketOS avec gst-plugins-bad), sur la caméra ou sur une image.
+# ═══════════════════════════════════════════════════════════════════════════
+def parse_invitation(text):
+    """Le lien d un QR code -> {"noeud", "pseudo", "code"}, ou None."""
+    text = (text or "").strip()
+    if not text.lower().startswith("osmo://inscription"):
+        return None
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(text).query)
+    inv = {k: (q.get(k) or [""])[0].strip() for k in ("noeud", "pseudo", "code")}
+    return inv if inv["noeud"] and inv["code"] else None
+
+
+def _gst():
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst
+    Gst.init(None)
+    return Gst
+
+
+def qr_from_image(path):
+    """Le texte du premier QR code d une image (capture d écran, photo). Bloquant."""
+    Gst = _gst()
+    pipe = Gst.parse_launch("filesrc name=src ! decodebin ! videoconvert ! zbar ! fakesink")
+    pipe.get_by_name("src").set_property("location", path)
+    bus = pipe.get_bus()
+    pipe.set_state(Gst.State.PLAYING)
+    try:
+        while True:
+            msg = bus.timed_pop_filtered(8 * Gst.SECOND, Gst.MessageType.ELEMENT | Gst.MessageType.ERROR
+                                         | Gst.MessageType.EOS)
+            if msg is None or msg.type == Gst.MessageType.EOS:
+                raise RuntimeError("aucun QR code dans cette image")
+            if msg.type == Gst.MessageType.ERROR:
+                raise RuntimeError("image illisible : %s" % msg.parse_error()[0].message)
+            st = msg.get_structure()
+            if st is not None and st.get_name() == "barcode":
+                return st.get_string("symbol")
+    finally:
+        pipe.set_state(Gst.State.NULL)
+
+
 class NodeClient:
     def __init__(self, host):
         self.host = host
@@ -1796,15 +1844,25 @@ class NodeUi:
         grp = Adw.PreferencesGroup()
         self.j_node = Adw.EntryRow(title="Adresse du nœud (IP locale, WireGuard, VPS)")
         self.j_user = Adw.EntryRow(title="Pseudo")
-        self.j_code = Adw.PasswordEntryRow(title="Code d'invitation")
+        self.j_code = Adw.PasswordEntryRow(title="Invitation (ou lien du QR code)")
+        self.j_code.connect("changed", self._on_invitation_typed)
         for r in (self.j_node, self.j_user, self.j_code):
             grp.add(r)
         box.append(grp)
+        # Le QR code de osmo-inscription --nouveau-qrcode : caméra, ou image (capture d écran).
+        qr = Gtk.Box(spacing=10, halign=Gtk.Align.CENTER)
+        scan = Gtk.Button(css_classes=["pill"], child=Adw.ButtonContent(icon_name="camera-photo-symbolic", label="Scanner le QR code"))
+        scan.connect("clicked", self.on_scan_qr)
+        img = Gtk.Button(css_classes=["pill"], child=Adw.ButtonContent(icon_name="image-x-generic-symbolic", label="Image"),
+                         tooltip_text="Lire le QR code d'une image")
+        img.connect("clicked", self.on_scan_image)
+        qr.append(scan); qr.append(img)
+        box.append(qr)
         self.j_go = Gtk.Button(label="S'inscrire", css_classes=["pill", "suggested-action"], halign=Gtk.Align.CENTER)
         self.j_go.connect("clicked", self.on_join)
         box.append(self.j_go)
         direct = Gtk.Button(label="J'ai déjà un compte SIP", css_classes=["flat"], halign=Gtk.Align.CENTER,
-                            tooltip_text="Pseudo = identifiant SIP, code = mot de passe SIP")
+                            tooltip_text="Pseudo = identifiant SIP, invitation = mot de passe SIP")
         direct.connect("clicked", self.on_direct)
         box.append(direct)
         page.set_child(Adw.Clamp(maximum_size=420, child=box))
@@ -1874,10 +1932,101 @@ class NodeUi:
         self.phone_stack.add_named(Adw.Clamp(maximum_size=420, child=box), "dial")
         return self.phone_stack
 
+    # ── l invitation par QR code ──
+    def use_invitation(self, text):
+        """Un lien de QR code : tout est dedans, on s inscrit sans rien demander."""
+        inv = parse_invitation(text)
+        if inv is None:
+            self.toast("Ce QR code n'est pas une invitation du nœud")
+            return False
+        self.j_node.set_text(inv["noeud"])
+        if inv["pseudo"]:
+            self.j_user.set_text(inv["pseudo"])
+        self._j_quiet = True
+        self.j_code.set_text(inv["code"])
+        self._j_quiet = False
+        if self.j_user.get_text().strip():
+            self.on_join(None)
+        else:
+            self.toast("Invitation lue : indiquez un pseudo, puis « S'inscrire »")
+        return True
+
+    def _on_invitation_typed(self, row):
+        # un lien collé dans le champ vaut un QR code lu
+        if not getattr(self, "_j_quiet", False) and parse_invitation(row.get_text()):
+            GLib.idle_add(lambda: self.use_invitation(row.get_text()) and False)
+
+    def on_scan_image(self, _btn):
+        dlg = Gtk.FileDialog(title="Image du QR code")
+        f = Gtk.FileFilter(); f.set_name("Images"); f.add_mime_type("image/*")
+        store = Gio.ListStore.new(Gtk.FileFilter); store.append(f)
+        dlg.set_filters(store)
+
+        def opened(d, res):
+            try:
+                path = d.open_finish(res).get_path()
+            except GLib.Error:
+                return                                  # annulé
+            self._in_thread(lambda: qr_from_image(path),
+                            lambda txt, err: self.toast("QR code : %s" % err) if err else self.use_invitation(txt))
+        dlg.open(self, None, opened)
+
+    def on_scan_qr(self, _btn):
+        """La caméra, jusqu au premier QR code. PipeWire (libcamera) d abord, V4L2 sinon."""
+        try:
+            Gst = _gst()
+        except (ValueError, ImportError) as e:
+            return self.toast("GStreamer absent : %s" % e)
+        pipe = None
+        for src in ("pipewiresrc", "v4l2src"):
+            try:
+                pipe = Gst.parse_launch("%s ! videoconvert ! zbar ! videoconvert ! gtk4paintablesink name=vue" % src)
+            except GLib.Error:
+                pipe = None
+                continue
+            if pipe.set_state(Gst.State.PLAYING) != Gst.StateChangeReturn.FAILURE:
+                break
+            pipe.set_state(Gst.State.NULL)
+            pipe = None
+        if pipe is None:
+            return self.toast("Pas de caméra utilisable : « Image », ou collez le lien dans Invitation")
+        dlg = Adw.Dialog(title="Scanner le QR code", content_width=360, content_height=520)
+        view = Adw.ToolbarView(); view.add_top_bar(Adw.HeaderBar())
+        pic = Gtk.Picture(paintable=pipe.get_by_name("vue").get_property("paintable"), vexpand=True,
+                          content_fit=Gtk.ContentFit.COVER)
+        note = Gtk.Label(label="Visez le QR code affiché par le nœud", css_classes=["dim-label"], margin_top=8, margin_bottom=10)
+        v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        v.append(pic); v.append(note)
+        view.set_content(v); dlg.set_child(view)
+        bus = pipe.get_bus()
+        bus.add_signal_watch()
+        etat = {"fini": False}
+
+        def stop(*_a):
+            if not etat["fini"]:
+                etat["fini"] = True
+                bus.remove_signal_watch()
+                pipe.set_state(Gst.State.NULL)
+
+        def message(_bus, msg):
+            if msg.type == Gst.MessageType.ERROR:
+                err = msg.parse_error()[0].message
+                stop(); dlg.close()
+                self.toast("Caméra : %s" % err)
+            elif msg.type == Gst.MessageType.ELEMENT:
+                st = msg.get_structure()
+                if st is not None and st.get_name() == "barcode" and parse_invitation(st.get_string("symbol")):
+                    txt = st.get_string("symbol")
+                    stop(); dlg.close()
+                    self.use_invitation(txt)
+        bus.connect("message", message)
+        dlg.connect("closed", stop)
+        dlg.present(self)
+
     def on_join(self, _btn):
         host, user, code = node_host(self.j_node.get_text()), self.j_user.get_text().strip(), self.j_code.get_text().strip()
         if not (host and user and code):
-            return self.toast("Adresse du nœud, pseudo et code sont nécessaires")
+            return self.toast("Adresse du nœud, pseudo et invitation sont nécessaires (ou scannez le QR code)")
         self.set_node(host)
         self.j_go.set_sensitive(False)
         self.j_go.set_label("Inscription…")

@@ -27,8 +27,9 @@
                 <LinearLayout android:id="@+id/panel_join" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Rejoindre un nœud : un numéro du réseau, sans carte SIM." android:textSize="16sp" android:paddingBottom="8dp"/>
                     <EditText android:id="@+id/user" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Pseudo (ou identifiant SIP)" android:inputType="text"/>
-                    <EditText android:id="@+id/secret" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Code d'invitation (ou mot de passe SIP)" android:inputType="textPassword"/>
-                    <Button android:id="@+id/btn_join" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="S'inscrire avec le code" android:textAllCaps="false"/>
+                    <EditText android:id="@+id/secret" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Invitation (ou mot de passe SIP)" android:inputType="textPassword"/>
+                    <Button android:id="@+id/btn_scan" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Scanner le QR code d&apos;invitation" android:textAllCaps="false"/>
+                    <Button android:id="@+id/btn_join" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="S'inscrire" android:textAllCaps="false"/>
                     <Button android:id="@+id/btn_direct" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="J'ai déjà un compte SIP" android:textAllCaps="false"/>
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="L'adresse du nœud se règle dans Compte." android:textSize="12sp"/>
                 </LinearLayout>
