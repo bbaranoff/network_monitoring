@@ -49,6 +49,12 @@ class SpectrumView(context: Context, attrs: AttributeSet?) : View(context, attrs
     private val grid = Paint().apply { color = Color.argb(28, 255, 255, 255); strokeWidth = 1f }
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(220, 255, 255, 255); textSize = 30f }
     private val small = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(150, 255, 255, 255); textSize = 24f }
+    private val green = Color.rgb(0x57, 0xe3, 0x89)
+    private val peakDot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = green }
+    private val peakText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = green; textSize = 28f; typeface = android.graphics.Typeface.DEFAULT_BOLD
+    }
+    private val peakPill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(217, 5, 26, 13) }
 
     fun fail(why: String) {
         message = why
@@ -57,6 +63,14 @@ class SpectrumView(context: Context, attrs: AttributeSet?) : View(context, attrs
 
     fun push(psd: DoubleArray, first: Double, last: Double, name: String) {
         if (psd.isEmpty()) return fail("spectre vide")
+        if ((psd.maxOrNull() ?: 0.0) - (psd.minOrNull() ?: 0.0) < 0.5) {
+            // flat floor: the FIFO receives nothing
+            trace = FloatArray(0)
+            return fail(
+                if (name.startsWith("MS")) "Le mobile n'émet pas (au repos) : le montant s'anime pendant un appel, un SMS ou un Location Update."
+                else "$name : aucun signal (source muette)"
+            )
+        }
         val n = psd.size
         // one column = the maximum of its group: a narrow peak does not vanish
         val c = DoubleArray(cols) { i ->
@@ -90,7 +104,16 @@ class SpectrumView(context: Context, attrs: AttributeSet?) : View(context, attrs
         canvas.drawColor(Color.rgb(8, 10, 18))
         canvas.drawBitmap(bitmap, null, RectF(0f, th, w, h), bitmapPaint)
         if (trace.isEmpty()) {
-            canvas.drawText(message, (w - text.measureText(message)) / 2, th / 2, text)
+            // word-wrapped in the width
+            val lines = mutableListOf<String>()
+            var cur = ""
+            for (word in message.split(" ")) {
+                val t = if (cur.isEmpty()) word else "$cur $word"
+                if (cur.isNotEmpty() && text.measureText(t) > w - 48f) { lines.add(cur); cur = word } else cur = t
+            }
+            lines.add(cur)
+            var yy = th / 2 - (lines.size - 1) * 20f
+            for (l in lines) { canvas.drawText(l, (w - text.measureText(l)) / 2, yy, text); yy += 40f }
             return
         }
         for (k in 1..3) {
@@ -112,9 +135,14 @@ class SpectrumView(context: Context, attrs: AttributeSet?) : View(context, attrs
         canvas.drawPath(Path().apply { for (i in 0 until cols) if (i == 0) moveTo(x(i), y(trace[i])) else lineTo(x(i), y(trace[i])) }, line)
         val px = x(peakCol)
         val py = y(trace[peakCol])
-        canvas.drawCircle(px, py, 7f, text)
+        // the peak in green, on a dark pill, never over the source title
+        canvas.drawCircle(px, py, 8f, peakDot)
         val t = "%+.0f kHz · %.0f dB".format(f0 + (f1 - f0) * peakCol / (cols - 1), peakDb)
-        canvas.drawText(t, (px - small.measureText(t) / 2).coerceIn(8f, w - small.measureText(t) - 8f), max(26f, py - 14f), small)
+        val tw = peakText.measureText(t)
+        val tx = (px - tw / 2).coerceIn(14f, w - tw - 18f)
+        val ty = max(84f, py - 22f)
+        canvas.drawRoundRect(RectF(tx - 12f, ty - 32f, tx + tw + 12f, ty + 12f), 16f, 16f, peakPill)
+        canvas.drawText(t, tx, ty, peakText)
         canvas.drawText(label, w - text.measureText(label) - 12f, 34f, text)
         canvas.drawText("%+.0f kHz".format(f0), 12f, h - 12f, small)
         val r = "%+.0f kHz".format(f1)

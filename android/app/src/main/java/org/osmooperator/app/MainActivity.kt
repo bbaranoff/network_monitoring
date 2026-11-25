@@ -18,18 +18,27 @@
 //         "sip_domain": "host", "sip_port": 5060, "sip_transport": "udp"}
 //   else {"ok": false, "error": "..."}
 //
-// MODES: Basique (phone, account) / Medium (+ radio, spectrum, services) /
-// Expert (+ VTY console, trunk choice).
+//   ws://<node>:8080/                   the frames (dashboard, tshark on the node)
 //
-// v0.3: the app holds the line only while it is open (no background service);
-// the frames page of the postmarketOS app is not here yet.
+// MODES: Basique (phone, messages, account) / Medium (+ radio: cell, frames,
+// journal; node: spectra, services) / Expert (+ VTY console, trunk choice).
+//
+// v0.4: same pages as the postmarketOS app - Messages (bubbles), Radio in three
+// panes (Cellule, Trames, Journal), Node one pane at a time, light theme by
+// default, "Forcer la 2G" (carrier privileges, else the hidden radio-info
+// screen). The app holds the line only while it is open (no background service).
 package org.osmooperator.app
 
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -41,12 +50,22 @@ import android.telephony.CellInfoNr
 import android.telephony.CellInfoWcdma
 import android.telephony.CellSignalStrengthNr
 import android.telephony.TelephonyManager
+import android.provider.Settings
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
+import android.view.Window
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ListView
+import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
+import java.security.MessageDigest
 import org.json.JSONArray
 import org.json.JSONObject
 import org.linphone.core.Account
@@ -76,12 +95,24 @@ class MainActivity : Activity() {
     private lateinit var user: EditText
     private lateinit var secret: EditText
     private lateinit var number: EditText
-    private lateinit var text: EditText
+    private lateinit var journalRadio: TextView
+    private lateinit var callCard: View
+    private lateinit var callPeer: TextView
+    private lateinit var callInfo: TextView
+    private lateinit var msgTo: EditText
+    private lateinit var msgText: EditText
+    private lateinit var msgList: LinearLayout
+    private lateinit var msgScroll: ScrollView
+    private lateinit var framesStatus: TextView
+    private lateinit var framesList: ListView
+    private lateinit var frames: FrameAdapter
+    private lateinit var netState: TextView
+    private lateinit var nodeTitle: TextView
+    private lateinit var themeState: TextView
     private lateinit var btnAnswer: Button
     private lateinit var btnHangup: Button
     private lateinit var node: EditText
     private lateinit var spectrum: SpectrumView
-    private lateinit var spectrumTitle: TextView
     private lateinit var services: TextView
     private lateinit var vtySel: Spinner
     private lateinit var vtyCmd: EditText
@@ -94,7 +125,16 @@ class MainActivity : Activity() {
     private lateinit var radioCells: TextView
 
     private var tab = "phone"
-    private var source = "bts"
+    private var radioPage = "cell"          // cell | frames | log
+    private var nodePage = 0                // index in nodePages
+    private var frameSource: FrameSource? = null
+    private var framesHost = ""
+    private var framesPaused = false
+    private val framesPending = ArrayList<Frame>()
+    private var framesNote = ""
+    private var callSince = 0L
+    private var dark = false
+    private val catButtons = HashMap<String, Button>()
     private var psdBusy = false
     private var etatAt = 0L
     private var cellsAt = 0L
@@ -104,6 +144,9 @@ class MainActivity : Activity() {
     private val host get() = prefs.getString("node", "") ?: ""
     private val mode get() = prefs.getInt("mode", 1)
     private val enrolled get() = prefs.contains("sip_user")
+    private val nodePages get() = if (mode == 2) listOf("bts", "ms", "services", "console") else listOf("bts", "ms", "services")
+    private val NODE_TITLES = mapOf("bts" to "Spectre BTS (descendant)", "ms" to "Spectre MS (montant)",
+        "services" to "Services", "console" to "Console VTY")
 
     // ── SIP events ───────────────────────────────────────────────────────────
     private val listener = object : CoreListenerStub() {
@@ -124,31 +167,40 @@ class MainActivity : Activity() {
             when (state) {
                 Call.State.IncomingReceived -> {
                     log("Appel entrant de $peer")
-                    number.setText(peer)
                     btnAnswer.isEnabled = true
                     btnHangup.isEnabled = true
+                    showCall(peer, "Appel entrant")
                     show("phone")
                 }
                 Call.State.OutgoingProgress -> {
                     log("Appel vers $peer…")
                     btnHangup.isEnabled = true
+                    showCall(peer, "Appel en cours…")
                 }
+                Call.State.OutgoingRinging -> showCall(peer, "Ça sonne…")
                 Call.State.StreamsRunning -> {
                     log("En communication avec $peer")
                     btnAnswer.isEnabled = false
+                    if (callSince == 0L) callSince = SystemClock.elapsedRealtime()
+                    showCall(peer, "En communication")
                 }
-                Call.State.Error -> log("Appel échoué : $message")
+                Call.State.Error -> { log("Appel échoué : $message"); showCall(null, "") }
                 Call.State.End, Call.State.Released -> {
                     if (state == Call.State.End) log("Appel terminé")
                     btnAnswer.isEnabled = false
                     btnHangup.isEnabled = core.callsNb > 0
+                    if (core.callsNb == 0) showCall(null, "")
                 }
                 else -> {}
             }
         }
 
         override fun onMessageReceived(core: Core, chatRoom: ChatRoom, message: ChatMessage) {
-            log("SMS de ${message.fromAddress.username ?: "?"} : ${message.utf8Text ?: ""}")
+            val from = message.fromAddress.username ?: "?"
+            val body = message.utf8Text ?: ""
+            log("SMS de $from : $body")
+            bubble(from, body, false)
+            if (msgTo.text.isBlank()) msgTo.setText(from)
         }
     }
 
@@ -160,21 +212,42 @@ class MainActivity : Activity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.main)
+        // The theme, before anything is drawn: light by default (0), dark (1),
+        // as the system (2). Changing it recreates the activity.
         prefs = getSharedPreferences("compte", MODE_PRIVATE)
+        val th = prefs.getInt("theme", 0)
+        val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        dark = th == 1 || (th == 2 && night)
+        setTheme(if (dark) android.R.style.Theme_Material_NoActionBar else android.R.style.Theme_Material_Light_NoActionBar)
+        super.onCreate(savedInstanceState)
+        requestWindowFeature(Window.FEATURE_NO_TITLE)
+        setContentView(R.layout.main)
 
         status = findViewById(R.id.status)
         journal = findViewById(R.id.journal)
         user = findViewById(R.id.user)
         secret = findViewById(R.id.secret)
         number = findViewById(R.id.number)
-        text = findViewById(R.id.text)
+        journalRadio = findViewById(R.id.journal_radio)
+        callCard = findViewById(R.id.call_card)
+        callPeer = findViewById(R.id.call_peer)
+        callInfo = findViewById(R.id.call_info)
+        msgTo = findViewById(R.id.msg_to)
+        msgText = findViewById(R.id.msg_text)
+        msgList = findViewById(R.id.msg_list)
+        msgScroll = findViewById(R.id.msg_scroll)
+        framesStatus = findViewById(R.id.frames_status)
+        framesList = findViewById(R.id.frames_list)
+        netState = findViewById(R.id.net_state)
+        nodeTitle = findViewById(R.id.node_title)
+        themeState = findViewById(R.id.theme_state)
+        frames = FrameAdapter(this, dark)
+        framesList.adapter = frames
+        callCard.background = GradientDrawable().apply { cornerRadius = 48f; setColor(Color.argb(46, 38, 162, 105)) }
         btnAnswer = findViewById(R.id.btn_answer)
         btnHangup = findViewById(R.id.btn_hangup)
         node = findViewById(R.id.node)
         spectrum = findViewById(R.id.spectrum)
-        spectrumTitle = findViewById(R.id.spectrum_title)
         services = findViewById(R.id.services)
         vtySel = findViewById(R.id.vty_sel)
         vtyCmd = findViewById(R.id.vty_cmd)
@@ -191,7 +264,46 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btn_call).setOnClickListener { call() }
         btnAnswer.setOnClickListener { (core.currentCall ?: core.calls.firstOrNull())?.accept() }
         btnHangup.setOnClickListener { core.calls.forEach { it.terminate() } }
-        findViewById<Button>(R.id.btn_send).setOnClickListener { sendSms() }
+        findViewById<Button>(R.id.msg_send).setOnClickListener { sendSms() }
+        findViewById<Button>(R.id.msg_wipe).setOnClickListener { wipe() }
+        findViewById<Button>(R.id.btn_wipe).setOnClickListener { wipe() }
+        findViewById<Button>(R.id.btn_2g).setOnClickListener { force2g(true) }
+        findViewById<Button>(R.id.btn_auto).setOnClickListener { force2g(false) }
+        findViewById<Button>(R.id.sub_cell).setOnClickListener { radioPage = "cell"; show("radio") }
+        findViewById<Button>(R.id.sub_frames).setOnClickListener { radioPage = "frames"; show("radio") }
+        findViewById<Button>(R.id.sub_log).setOnClickListener { radioPage = "log"; show("radio") }
+        findViewById<Button>(R.id.node_prev).setOnClickListener { nodeStep(-1) }
+        findViewById<Button>(R.id.node_next).setOnClickListener { nodeStep(1) }
+        findViewById<Button>(R.id.tab_messages).setOnClickListener { show("messages") }
+        listOf(R.id.btn_theme0, R.id.btn_theme1, R.id.btn_theme2).forEachIndexed { i, id ->
+            findViewById<Button>(id).setOnClickListener {
+                if (prefs.getInt("theme", 0) != i) { prefs.edit().putInt("theme", i).apply(); recreate() }
+            }
+        }
+        themeState.text = "Thème : ${listOf("Clair", "Sombre", "Comme le système")[th]}"
+        // the frames: filter, pause, clear, and the families in one touch
+        findViewById<EditText>(R.id.frames_filter).addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(e: Editable?) { frames.query = e?.toString() ?: ""; framesNote() }
+            override fun beforeTextChanged(c: CharSequence?, a: Int, b: Int, d: Int) {}
+            override fun onTextChanged(c: CharSequence?, a: Int, b: Int, d: Int) {}
+        })
+        findViewById<Button>(R.id.frames_pause).setOnClickListener {
+            framesPaused = !framesPaused
+            (it as Button).text = if (framesPaused) "▶" else "⏸"
+            if (!framesPaused) { framesPending.forEach { f -> frames.add(f) }; framesPending.clear() }
+            framesNote()
+        }
+        findViewById<Button>(R.id.frames_clear).setOnClickListener { frames.clear(); framesPending.clear(); framesNote() }
+        val cats = findViewById<LinearLayout>(R.id.frames_cats)
+        for ((key, label) in CATEGORIES) {
+            val b = Button(this, null, android.R.attr.borderlessButtonStyle).apply {
+                text = label; isAllCaps = false; textSize = 13f
+                setOnClickListener { frames.category = key; catButtons.forEach { (k, v) -> v.alpha = if (k == key) 1f else 0.5f }; framesNote() }
+                alpha = if (key == "all") 1f else 0.5f
+            }
+            catButtons[key] = b
+            cats.addView(b)
+        }
         findViewById<Button>(R.id.btn_leave).setOnClickListener { leave() }
         findViewById<Button>(R.id.btn_node).setOnClickListener { setNode(node.text.toString()) }
         findViewById<Button>(R.id.btn_vty).setOnClickListener { runVty() }
@@ -204,10 +316,7 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.tab_radio).setOnClickListener { show("radio") }
         findViewById<Button>(R.id.tab_node).setOnClickListener { show("node") }
         findViewById<Button>(R.id.tab_account).setOnClickListener { show("account") }
-        spectrum.onSwipe = {
-            source = if (source == "bts") "ms" else "bts"
-            spectrumTitle.text = if (source == "bts") "Spectre BTS (descendant)  ●○" else "Spectre MS (montant)  ○●"
-        }
+        spectrum.onSwipe = { dir -> nodeStep(-dir) }          // swipe left: the next pane
 
         core = Factory.instance().createCore(null, null, this)
         core.addListener(listener)
@@ -224,6 +333,7 @@ class MainActivity : Activity() {
         applyMode()
         show(if (mode == 0 || enrolled) "phone" else "radio")
         if (host.isNotEmpty()) trunk(null)
+        netNote()
     }
 
     override fun onResume() {
@@ -237,6 +347,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        frameSource?.stop()
         core.removeListener(listener)
         core.stop()
         super.onDestroy()
@@ -246,6 +357,47 @@ class MainActivity : Activity() {
     private fun log(line: String) {
         val t = SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(Date())
         journal.text = "$t  $line\n${journal.text}"
+        journalRadio.text = journal.text
+    }
+
+    /** The call card takes the place of the number field: who, and where it stands. */
+    private fun showCall(peer: String?, info: String) {
+        val busy = peer != null
+        callCard.visibility = if (busy) View.VISIBLE else View.GONE
+        number.visibility = if (busy) View.GONE else View.VISIBLE
+        findViewById<View>(R.id.btn_call).visibility = if (busy) View.GONE else View.VISIBLE
+        if (busy) { callPeer.text = peer; callInfo.text = info } else callSince = 0L
+    }
+
+    /** Calls and conversations, erased: bubbles, journals, the typed number. */
+    private fun wipe() {
+        msgList.removeAllViews()
+        msgTo.setText(""); msgText.setText("")
+        journal.text = ""; journalRadio.text = ""
+        if (core.callsNb == 0) number.setText("")
+        status.text = "Appels et conversations effacés"
+        ui.postDelayed({ showStatus() }, 1500)
+    }
+
+    private fun dp(v: Float) = (v * resources.displayMetrics.density).toInt()
+
+    private fun bubble(peer: String, text: String, out: Boolean) {
+        val t = SimpleDateFormat("HH:mm", Locale.ROOT).format(Date())
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = if (out) Gravity.END else Gravity.START }
+        val body = TextView(this).apply {
+            this.text = text; textSize = 16f; setTextIsSelectable(true)
+            setPadding(dp(14f), dp(9f), dp(14f), dp(9f)); maxWidth = dp(280f)
+            setTextColor(if (out) Color.WHITE else if (dark) Color.WHITE else Color.rgb(36, 31, 49))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(18f).toFloat()
+                setColor(if (out) Color.rgb(38, 162, 105) else if (dark) Color.rgb(54, 54, 60) else Color.rgb(228, 228, 232))
+            }
+        }
+        val cap = TextView(this).apply { this.text = "${if (out) "à" else "de"} $peer · $t"; textSize = 11f; alpha = 0.6f }
+        val wrap = { LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT) }
+        box.addView(body, wrap()); box.addView(cap, wrap())
+        msgList.addView(box, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8f) })
+        msgScroll.post { msgScroll.fullScroll(View.FOCUS_DOWN) }
     }
 
     private fun showStatus() {
@@ -286,41 +438,93 @@ class MainActivity : Activity() {
             ?: err ?: "le nœud ne répond pas"
 
     // ── Tabs and modes ───────────────────────────────────────────────────────
+    private fun vis(id: Int, on: Boolean) { findViewById<View>(id).visibility = if (on) View.VISIBLE else View.GONE }
+
     private fun show(name: String) {
         tab = name
-        findViewById<View>(R.id.panel_join).visibility = if (name == "phone" && !enrolled) View.VISIBLE else View.GONE
-        findViewById<View>(R.id.panel_phone).visibility = if (name == "phone" && enrolled) View.VISIBLE else View.GONE
-        findViewById<View>(R.id.panel_radio).visibility = if (name == "radio") View.VISIBLE else View.GONE
-        findViewById<View>(R.id.panel_node).visibility = if (name == "node") View.VISIBLE else View.GONE
-        findViewById<View>(R.id.panel_account).visibility = if (name == "account") View.VISIBLE else View.GONE
+        val framesOn = name == "radio" && radioPage == "frames"
+        vis(R.id.scroll, name != "messages" && !framesOn)
+        vis(R.id.panel_frames, framesOn)
+        vis(R.id.panel_messages, name == "messages")
+        vis(R.id.panel_join, name == "phone" && !enrolled)
+        vis(R.id.panel_phone, name == "phone" && enrolled)
+        vis(R.id.panel_radio, name == "radio" && radioPage == "cell")
+        vis(R.id.panel_log, name == "radio" && radioPage == "log")
+        vis(R.id.panel_node, name == "node")
+        vis(R.id.panel_account, name == "account")
+        vis(R.id.nav_radio, name == "radio")
+        vis(R.id.nav_node, name == "node")
+        listOf("cell" to R.id.sub_cell, "frames" to R.id.sub_frames, "log" to R.id.sub_log).forEach { (k, id) ->
+            findViewById<View>(id).alpha = if (k == radioPage) 1f else 0.5f
+        }
         showStatus()
         etatAt = 0
         cellsAt = 0
-        if (name == "node" && host.isEmpty()) spectrum.fail("pas de nœud : son adresse dans Compte")
+        if (name == "node") showNode()
+        if (name == "radio") ensureFrames()
+    }
+
+    /** The node, one pane at a time: BTS, MS, services, console (Expert). */
+    private fun showNode() {
+        val pages = nodePages
+        nodePage = nodePage.coerceIn(0, pages.size - 1)
+        val p = pages[nodePage]
+        vis(R.id.spectrum, p == "bts" || p == "ms")
+        vis(R.id.services, p == "services")
+        vis(R.id.panel_console, p == "console")
+        nodeTitle.text = "${NODE_TITLES[p]}\n${pages.indices.joinToString(" ") { if (it == nodePage) "●" else "○" }}"
+        if (host.isEmpty()) spectrum.fail("pas de nœud : son adresse dans Compte")
+        etatAt = 0
+    }
+
+    private fun nodeStep(d: Int) {
+        nodePage = (nodePage + d).coerceIn(0, nodePages.size - 1)
+        showNode()
+    }
+
+    /** The frames follow the node: one source, restarted when the address changes. */
+    private fun ensureFrames() {
+        val h = host
+        if (h == framesHost && frameSource != null) return
+        frameSource?.stop(); frameSource = null; framesHost = h
+        if (h.isEmpty()) { framesNote = "pas de nœud : son adresse dans Compte"; framesNote(); return }
+        frameSource = FrameSource("ws://$h:8080/", { f ->
+            if (framesPaused) { framesPending.add(f); if (framesPending.size > 2000) framesPending.removeAt(0) } else frames.add(f)
+            if (framesNote.endsWith("capture demandée")) framesNote = framesNote.removeSuffix("demandée") + "active"
+            framesNote()
+        }, { t, _ -> framesNote = t; framesNote() })
+    }
+
+    private fun framesNote() {
+        framesStatus.text = "$framesNote · ${frames.count} / ${frames.total()} trame(s)" +
+            if (framesPaused) " · en pause (${framesPending.size})" else ""
     }
 
     private fun applyMode() {
         val m = mode
         modeState.text = "Mode : ${listOf("Basique", "Medium", "Expert")[m]}"
-        findViewById<View>(R.id.tab_radio).visibility = if (m >= 1) View.VISIBLE else View.GONE
-        findViewById<View>(R.id.tab_node).visibility = if (m >= 1) View.VISIBLE else View.GONE
-        findViewById<View>(R.id.panel_console).visibility = if (m == 2) View.VISIBLE else View.GONE
-        findViewById<View>(R.id.panel_trunk).visibility = if (m == 2) View.VISIBLE else View.GONE
-        if (m == 0 && (tab == "radio" || tab == "node")) show("phone")
+        vis(R.id.tab_radio, m >= 1)
+        vis(R.id.tab_node, m >= 1)
+        vis(R.id.panel_trunk, m == 2)
+        if (m == 0 && (tab == "radio" || tab == "node")) show("phone") else show(tab)
     }
 
     private fun tick() {
         val now = SystemClock.elapsedRealtime()
-        if (tab == "radio" && now - cellsAt > 2000) {
+        if (callSince != 0L && callCard.visibility == View.VISIBLE) {
+            val sec = (now - callSince) / 1000
+            callInfo.text = "En communication · %02d:%02d".format(sec / 60, sec % 60)
+        }
+        if (tab == "radio" && radioPage == "cell" && now - cellsAt > 2000) {
             cellsAt = now
             refreshCells()
         }
         if (tab != "node" || host.isEmpty()) return
         val h = host
-        if (!psdBusy) {
+        val page = nodePages[nodePage.coerceIn(0, nodePages.size - 1)]
+        if ((page == "bts" || page == "ms") && !psdBusy) {
             psdBusy = true
-            val s = source
-            bg({ http("http://$h:8081/psd?src=$s", null, 3000) }) { d, err ->
+            bg({ http("http://$h:8081/psd?src=$page", null, 3000) }) { d, err ->
                 psdBusy = false
                 val p = d?.optJSONArray("psd")
                 if (d == null || p == null || p.length() == 0) {
@@ -336,7 +540,7 @@ class MainActivity : Activity() {
                 }
             }
         }
-        if (now - etatAt > 5000) {
+        if ((page == "services" || page == "console") && now - etatAt > 5000) {
             etatAt = now
             bg({ http("http://$h:8090/api/etat") }) { d, err -> showEtat(d, err) }
         }
@@ -350,12 +554,13 @@ class MainActivity : Activity() {
         etatAt = 0
         services.text = ""
         if (h.isNotEmpty()) trunk(null) else trunkState.text = "Sortie vers l'extérieur : —"
+        if (tab == "radio") ensureFrames()
     }
 
     private fun showEtat(d: JSONObject?, err: String?) {
         val procs = d?.optJSONArray("procs")
         if (procs == null) {
-            services.text = "Services : ${why(d, err)}"
+            services.text = "Services indisponibles : osmo-reglages ne répond pas sur le port 8090 (${why(d, err)})"
             return
         }
         val sb = StringBuilder("Services du nœud (${procs.length()})\n\n")
@@ -547,7 +752,8 @@ class MainActivity : Activity() {
         core.clearAllAuthInfo()
         val keepNode = host
         val keepMode = mode
-        prefs.edit().clear().putString("node", keepNode).putInt("mode", keepMode).apply()
+        val keepTheme = prefs.getInt("theme", 0)
+        prefs.edit().clear().putString("node", keepNode).putInt("mode", keepMode).putInt("theme", keepTheme).apply()
         online = "Hors ligne"
         show("phone")
     }
@@ -569,20 +775,94 @@ class MainActivity : Activity() {
     }
 
     private fun sendSms() {
-        val to = peer()
-        val body = text.text.toString()
-        if (number.text.isBlank() || to == null || body.isEmpty()) {
-            log("Numéro ou message manquant")
+        val num = msgTo.text.toString().trim().replace(" ", "")
+        val body = msgText.text.toString()
+        val to = Factory.instance().createAddress("sip:$num@${prefs.getString("sip_domain", "")}")
+        if (!enrolled) { status.text = "Pas de compte sur un nœud (onglet Tél.)"; return }
+        if (num.isEmpty() || to == null || body.isEmpty()) {
+            status.text = "Numéro ou message manquant"
             return
         }
         // SIP MESSAGE, one basic chat room per peer.
         val room = core.getChatRoom(to)
         if (room == null) {
-            log("SMS impossible vers ${to.username}")
+            log("SMS impossible vers $num")
             return
         }
         room.createMessageFromUtf8(body).send()
-        log("SMS à ${to.username} : $body")
-        text.setText("")
+        log("SMS à $num : $body")
+        bubble(num, body, true)
+        msgText.setText("")
+    }
+
+    // ── Forcing 2G ───────────────────────────────────────────────────────────
+    // An ordinary app cannot choose the network type: Android asks for
+    // MODIFY_PHONE_STATE (system apps) or CARRIER PRIVILEGES, which a SIM gives
+    // to the apps whose signing certificate is in its access rules (ARA-M /
+    // ARF, written with pySim on a bench SIM). With them, GSM only and back;
+    // without, the hidden "phone info" screen (*#*#4636#*#*), where the
+    // preferred network type is chosen by hand.
+    private val GSM_ONLY = TelephonyManager.NETWORK_TYPE_BITMASK_GSM or
+        TelephonyManager.NETWORK_TYPE_BITMASK_GPRS or TelephonyManager.NETWORK_TYPE_BITMASK_EDGE
+    private val REASON_CARRIER = 2          // TelephonyManager.ALLOWED_NETWORK_TYPES_REASON_CARRIER
+
+    private fun certHash(): String = try {
+        @Suppress("DEPRECATION")
+        val info = packageManager.getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+        val sig = info.signingInfo?.apkContentsSigners?.firstOrNull()
+        if (sig == null) "?" else MessageDigest.getInstance("SHA-256").digest(sig.toByteArray())
+            .joinToString("") { "%02X".format(it) }
+    } catch (e: Exception) { "?" }
+
+    private fun privileged(): Boolean = try {
+        (getSystemService(TELEPHONY_SERVICE) as TelephonyManager).hasCarrierPrivileges()
+    } catch (e: Exception) { false }
+
+    private fun netNote(extra: String = "") {
+        netState.text = (if (extra.isEmpty()) "" else "$extra\n") +
+            (if (privileged()) "Privilèges opérateur : oui, l'appli peut forcer la 2G."
+            else "Privilèges opérateur : non. « Forcer la 2G » ouvre l'écran caché du téléphone " +
+                "(Type de réseau préféré → GSM only). Pour un vrai forçage : règle ARA-M de la SIM, " +
+                "certificat SHA-256 ${certHash()}")
+    }
+
+    @SuppressLint("MissingPermission", "WrongConstant", "NewApi")
+    private fun force2g(on: Boolean) {
+        val tm = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
+        if (privileged() && Build.VERSION.SDK_INT >= 31) {
+            try {
+                if (on) {
+                    if (!prefs.contains("net_before"))
+                        prefs.edit().putLong("net_before", tm.getAllowedNetworkTypesForReason(REASON_CARRIER)).apply()
+                    tm.setAllowedNetworkTypesForReason(REASON_CARRIER, GSM_ONLY)
+                    log("Réseau : 2G forcée (GSM seul)")
+                    netNote("2G forcée : le téléphone ne campe plus que sur le GSM.")
+                } else if (prefs.contains("net_before")) {
+                    tm.setAllowedNetworkTypesForReason(REASON_CARRIER, prefs.getLong("net_before", GSM_ONLY))
+                    prefs.edit().remove("net_before").apply()
+                    log("Réseau : retour au choix automatique")
+                    netNote("Réseau automatique rétabli.")
+                } else netNote("Rien à rétablir : la 2G n'avait pas été forcée par l'appli.")
+                return
+            } catch (e: Exception) {
+                netNote("Forçage refusé par Android : ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+        // No privileges: the hidden radio-info screen, then the network settings.
+        val tries = listOf(
+            Intent(Intent.ACTION_MAIN).setClassName("com.android.phone", "com.android.phone.settings.RadioInfo"),
+            Intent(Intent.ACTION_MAIN).setClassName("com.android.settings", "com.android.settings.RadioInfo"),
+            Intent(Settings.ACTION_NETWORK_OPERATOR_SETTINGS),
+            Intent(Settings.ACTION_WIRELESS_SETTINGS)
+        )
+        for (i in tries) {
+            try {
+                startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                netNote(if (on) "Dans l'écran ouvert : Type de réseau préféré → GSM only."
+                        else "Dans l'écran ouvert : remettre le type de réseau préféré d'origine.")
+                return
+            } catch (e: Exception) { /* the next one */ }
+        }
+        netNote("Aucun écran de réglage réseau accessible sur ce téléphone.")
     }
 }

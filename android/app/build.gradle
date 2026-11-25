@@ -11,7 +11,7 @@ android {
         applicationId "org.osmooperator.app"
         minSdk 29
         targetSdk 34
-        versionCode 3
+        versionCode 4
         versionName "0.3"
     }
 
@@ -27,4 +27,6 @@ android {
 dependencies {
     // Pinned to the 5.3 line: the chat and account APIs used here changed in 5.4.
     implementation "org.linphone:linphone-sdk-android:5.3.+"
+    // The frames of the bench: a WebSocket to the dashboard (osmo-egprs-web).
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
 }
