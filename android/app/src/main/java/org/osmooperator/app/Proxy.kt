@@ -154,6 +154,9 @@ class CallReceiver : BroadcastReceiver() {
         // Android sends the broadcast twice; only the one that carries the number is used
         @Suppress("DEPRECATION")
         val from = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER) ?: return
+        // A call OF THE BENCH ringing here (account "Banc") also makes the phone
+        // ring: it is not a call of the SIM, the bench must not be told about it.
+        if (Bench.isBenchNumber(ctx, from.replace(" ", ""))) return
         val pending = goAsync()
         thread {
             try {

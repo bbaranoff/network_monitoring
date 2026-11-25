@@ -205,6 +205,19 @@ class BenchConnection(private val call: Call?) : Connection() {
         destroy()
     }
 
+    // With the phone paired to the node as a hands-free line (tab Proxy),
+    // Android sends the sound of EVERY call to the Bluetooth - a call of the
+    // bench would be heard on the node, not here. Once per call, the sound is
+    // brought back to the earpiece (the user can still choose another route).
+    private var routed = false
+    override fun onCallAudioStateChanged(state: android.telecom.CallAudioState?) {
+        if (!routed && state != null && state.route == android.telecom.CallAudioState.ROUTE_BLUETOOTH) {
+            routed = true
+            @Suppress("DEPRECATION")
+            setAudioRoute(android.telecom.CallAudioState.ROUTE_EARPIECE)
+        }
+    }
+
     override fun onAnswer() { call?.accept() }
     override fun onReject() { call?.decline(Reason.Declined); over(DisconnectCause.REJECTED) }
     override fun onDisconnect() { call?.terminate(); over(DisconnectCause.LOCAL) }
