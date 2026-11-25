@@ -11,7 +11,7 @@ banc** (osmo-egprs-web), qui fait tourner tshark sur l'hôte et les pousse par
 WebSocket : depuis la VM l'hôte est `10.0.2.2`, l'appli s'y branche toute
 seule.
 
-## 0.3 : le moniteur devient un poste du réseau
+## 0.3 puis 0.4 : le moniteur devient un poste du réseau
 
 Cinq onglets : **Téléphone**, **Messages**, **Radio**, **Nœud**, **Compte**.
 « Radio » (les pages d'avant) et « Nœud » se feuillettent du doigt.
