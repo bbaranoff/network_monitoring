@@ -79,7 +79,7 @@ LOC_3GPP_LAC_CI = 1 << 0       # MM_MODEM_LOCATION_SOURCE_3GPP_LAC_CI (1 << 1 se
 ACT_5GNR = 1 << 15             # MM_MODEM_ACCESS_TECHNOLOGY_5GNR
 
 APP_ID = "org.osmocom.NetworkMonitor"
-VERSION = "0.9"
+VERSION = "0.9.2"
 HISTORY_S = 600          # 10 min d historique par mesure
 POLL_S = 2               # cadence de lecture
 FRAMES_MAX = 2000        # trames gardees a l ecran
@@ -2412,6 +2412,87 @@ class NodeUi:
                        else "Sortie inchangée : %s" % (err or (d or {}).get("err") or "refus du nœud"))
         self._in_thread(lambda: node.trunk(choice), done)
 
+    # ── le démarrage rapide ──
+    def open_quick(self):
+        """Tout ce qu il faut régler au premier lancement, dans l ordre, sur un
+        seul écran : le nœud (QR code), l affichage, le proxy, la ligne
+        Bluetooth. Se rouvre depuis le menu."""
+        dlg = Adw.Dialog(title="Démarrage rapide", content_width=360, content_height=640)
+        view = Adw.ToolbarView(); view.add_top_bar(Adw.HeaderBar())
+        page = Adw.PreferencesPage()
+
+        g1 = Adw.PreferencesGroup(title="1. Rejoindre le nœud",
+                                  description="Scannez le QR code d'invitation (osmo-inscription --nouveau-qrcode).")
+        r_acc = Adw.ActionRow(title="Compte", subtitle="—")
+        scan = Gtk.Button(icon_name="camera-photo-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Scanner le QR code")
+        img = Gtk.Button(icon_name="image-x-generic-symbolic", valign=Gtk.Align.CENTER, tooltip_text="Lire une image du QR code")
+        scan.connect("clicked", self.on_scan_qr); img.connect("clicked", self.on_scan_image)
+        r_acc.add_suffix(scan); r_acc.add_suffix(img)
+        g1.add(r_acc)
+        r_link = Adw.EntryRow(title="… ou collez le lien de l'invitation")
+        r_link.connect("changed", lambda r: parse_invitation(r.get_text()) and self.use_invitation(r.get_text()))
+        g1.add(r_link)
+        page.add(g1)
+
+        g2 = Adw.PreferencesGroup(title="2. Affichage")
+        r_mode = Adw.ComboRow(title="Mode", subtitle="ce que l'appli montre", model=Gtk.StringList.new(list(MODES)))
+        r_mode.set_selected(self.mode)
+        r_mode.connect("notify::selected", lambda r, _p: self.set_mode(r.get_selected()))
+        g2.add(r_mode)
+        r_theme = Adw.ComboRow(title="Thème", model=Gtk.StringList.new([t for _k, t, _s in THEMES]))
+        r_theme.set_selected(self.a_theme.get_selected())
+        r_theme.connect("notify::selected", lambda r, _p: (self.a_theme.set_selected(r.get_selected())))
+        g2.add(r_theme)
+        page.add(g2)
+
+        g3 = Adw.PreferencesGroup(title="3. Proxy (facultatif)",
+                                  description="Les appels du banc dans l'appli Appels ; un smartphone associé "
+                                              "en Bluetooth prête sa carte SIM pour les appels vers l'extérieur.")
+        r_nat = Adw.SwitchRow(title="Appels dans l'appli Appels", subtitle="SMS en notification")
+        r_nat.set_active(self.a_natif.get_active())
+        r_nat.connect("notify::active", lambda r, _p: self.a_natif.set_active(r.get_active()))
+        g3.add(r_nat)
+        r_bt = Adw.ActionRow(title="Téléphone Bluetooth", subtitle="—", subtitle_lines=3)
+        b_bt = Gtk.Button(label="Associer", valign=Gtk.Align.CENTER)
+        b_bt.connect("clicked", self.on_bt_pair)
+        r_bt.add_suffix(b_bt)
+        g3.add(r_bt)
+        page.add(g3)
+
+        g4 = Adw.PreferencesGroup()
+        fin = Gtk.Button(label="Terminer", css_classes=["pill", "suggested-action"], halign=Gtk.Align.CENTER)
+        g4.add(fin)
+        page.add(g4)
+        view.set_content(page); dlg.set_child(view)
+        etat = {"ouvert": True}
+
+        def rafraichir():
+            if not etat["ouvert"]:
+                return False
+            acc = self.account
+            r_acc.set_subtitle("%s sur %s" % (acc["msisdn"], acc["sip_domain"]) if acc else "pas encore de compte")
+            (r_acc.add_css_class if acc else r_acc.remove_css_class)("success")
+            for w in (r_nat, b_bt):
+                w.set_sensitive(acc is not None)
+            if r_nat.get_active() != self.a_natif.get_active():
+                r_nat.set_active(self.a_natif.get_active())
+            r_bt.set_subtitle(self.a_bt.get_subtitle() or "—")
+            if self.node is not None and acc and not self.demo:
+                self._in_thread(self.node.bluetooth, self._bt_shown)
+            return True
+
+        def fermer(*_a):
+            etat["ouvert"] = False
+            if not self.demo and not self.settings.get("quick_done"):
+                self.settings["quick_done"] = True
+                save_settings(self.settings)
+        fin.connect("clicked", lambda *_: dlg.close())
+        dlg.connect("closed", fermer)
+        rafraichir()
+        GLib.timeout_add_seconds(3, rafraichir)
+        dlg.present(self)
+        return False
+
     # ── la ligne Bluetooth du nœud ──
     def _bt_shown(self, d, err):
         if err or not d or not d.get("ok"):
@@ -2708,6 +2789,7 @@ class Window(NodeUi, Adw.ApplicationWindow):
         menu.append("Balayer les réseaux", "win.scan")
         menu.append("Enregistrer en CSV", "win.record")
         menu.append("Effacer le journal", "win.clear")
+        menu.append("Démarrage rapide", "win.quick")
         menu.append("À propos", "win.about")
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu))
         self.rec_icon = Gtk.Image(icon_name="media-record-symbolic", visible=False, css_classes=["error"])
@@ -2745,7 +2827,7 @@ class Window(NodeUi, Adw.ApplicationWindow):
                       else int(self.settings.get("mode", 2 if demo else 1)))
 
         for name, cb in (("scan", self.on_scan), ("clear", lambda *_: self.events.remove_all()),
-                         ("about", self.on_about)):
+                         ("quick", lambda *_: self.open_quick()), ("about", self.on_about)):
             a = Gio.SimpleAction.new(name, None); a.connect("activate", cb); self.add_action(a)
         rec = Gio.SimpleAction.new_stateful("record", None, GLib.Variant.new_boolean(False))
         rec.connect("change-state", self.on_record); self.add_action(rec)
@@ -2759,6 +2841,9 @@ class Window(NodeUi, Adw.ApplicationWindow):
             self.set_node(host)
         if self.settings.get("account"):
             self.use_account(self.settings["account"], save=False)
+        # Premier lancement : le démarrage rapide prend l écran.
+        if not demo and not self.settings.get("quick_done") and not getattr(app, "screenshot", None):
+            GLib.timeout_add(600, lambda: self.open_quick() and False)
         if demo:                        # un passé simulé : le graphe n attend pas dix minutes
             now = time.time()
             for i in range(200, 0, -1):
