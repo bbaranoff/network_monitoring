@@ -777,6 +777,8 @@ class FrameItem(GObject.Object):
                     else "bcast" if self.kind == "bcch"
                     else "sms" if self.kind == "sms"
                     else "core" if self.kind in ("core", "lte")
+                    # « other » : les lignes de journal des démons (GSMTAP log) - dans Tout seulement
+                    else "divers" if self.kind == "other"
                     else "sig")
         self.key = any(k in low for k in KEY_MESSAGES)
 

@@ -116,6 +116,7 @@ class Frame(val d: JSONObject) {
             kind == "bcch" -> "bcast"
             kind == "sms" -> "sms"
             kind == "core" || kind == "lte" -> "core"
+            kind == "other" -> "divers"        // daemon log lines (GSMTAP log): in "Tout" only
             else -> "sig"
         }
         key = KEY_MESSAGES.any { it in low }
