@@ -1011,6 +1011,8 @@ PORT_FFT = int(os.environ.get("NETMON_FFT_PORT", "8081"))
 PORT_API = int(os.environ.get("NETMON_API_PORT", "8090"))
 PORT_WS = int(os.environ.get("NETMON_WS_PORT", "8080"))
 PORT_JOIN = int(os.environ.get("NETMON_JOIN_PORT", "8088"))
+# Où chercher osmo-reglages quand il ne répond pas à l adresse du nœud (voir NodeClient._api).
+API_REPLI = [h for h in os.environ.get("NETMON_API_FALLBACK", "10.0.2.2").split(",") if h]
 SETTINGS = os.path.join(GLib.get_user_config_dir(), "network-monitor", "reglages.json")
 
 
@@ -1058,21 +1060,37 @@ def http_json(url, data=None, timeout=4):
 class NodeClient:
     def __init__(self, host):
         self.host = host
+        self.api_host = None
 
     def psd(self, src):
         return http_json("http://%s:%d/psd?src=%s" % (self.host, PORT_FFT, src), timeout=3)
 
+    def _api(self, chemin, data=None, timeout=4):
+        """osmo-reglages écoute sur 127.0.0.1 par défaut (sa console VTY exécute
+        tout) : injoignable par l adresse du nœud. Depuis la VM du banc, l hôte
+        est aussi 10.0.2.2, qui mène à son 127.0.0.1 : on l essaie en repli.
+        L adresse qui a répondu est gardée."""
+        hotes = [self.api_host] if self.api_host else [self.host] + [h for h in API_REPLI if h != self.host]
+        err = None
+        for h in hotes:
+            try:
+                r = http_json("http://%s:%d%s" % (h, PORT_API, chemin), data, timeout=timeout)
+                self.api_host = h
+                return r
+            except (OSError, ValueError) as e:
+                err = e
+        self.api_host = None
+        raise err
+
     def etat(self):
-        return http_json("http://%s:%d/api/etat" % (self.host, PORT_API))
+        return self._api("/api/etat")
 
     def console(self, hote, port, ligne):
-        return http_json("http://%s:%d/api/console" % (self.host, PORT_API),
-                         {"hote": hote, "port": port, "lignes": [ligne]}, timeout=10)
+        return self._api("/api/console", {"hote": hote, "port": port, "lignes": [ligne]}, timeout=10)
 
     def trunk(self, choice=None):
         """La sortie vers le réseau public : lue (None) ou choisie."""
-        return http_json("http://%s:%d/api/trunk" % (self.host, PORT_API),
-                         None if choice is None else {"trunk": choice})
+        return self._api("/api/trunk", None if choice is None else {"trunk": choice})
 
     def enrol(self, pseudo, code):
         j = http_json("http://%s:%d/inscription" % (self.host, PORT_JOIN),
