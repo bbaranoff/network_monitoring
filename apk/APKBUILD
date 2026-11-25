@@ -4,7 +4,7 @@
 # directement, les sources sont dans le dossier parent.
 pkgname=network-monitor
 pkgver=0.6
-pkgrel=0
+pkgrel=1
 pkgdesc="Cellular monitor and SIM-less phone for Phosh, client of an osmo-operator node"
 url="https://github.com/bbaranoff/osmo-operator"
 arch="noarch"
@@ -25,7 +25,7 @@ package() {
 }
 
 sha512sums="
-55176bdf150ec5cd90ec83fb5215593aeb6a8810dc13a11f80d56970d3bc89dcb0a6e51ad64a5ed8f2e883bd6dce369491bab98e72f19675500679d4192f2a8f  network-monitor.py
+c311b2682c819656a70947893aceb4800ee6f54de40a8d9bf65cc998bef0de05b06fbe583e1bc20e2dae1b1dbec2b7926bed894df58856079f4f4b38ab063e07  network-monitor.py
 2f9992b48270c11c67fddd1b13486acb66352c42ab96813772259ca290ce8b01572d43678dd3816c9df09c70f2e9caeb30b3f4e114c223d7b2190961cd7aa562  org.osmocom.NetworkMonitor.desktop
 94085b63c8e522da2d9a897311f8de50e78e15548aaf1a7224b269500ce48d0a9569d7ee995674fd06f23bef27885aaaccde0f171a33de3c1cb9c6fce95d7bb6  org.osmocom.NetworkMonitor.svg
 "

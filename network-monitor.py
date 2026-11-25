@@ -1850,11 +1850,12 @@ class NodeUi:
             grp.add(r)
         box.append(grp)
         # Le QR code de osmo-inscription --nouveau-qrcode : caméra, ou image (capture d écran).
-        qr = Gtk.Box(spacing=10, halign=Gtk.Align.CENTER)
-        scan = Gtk.Button(css_classes=["pill"], child=Adw.ButtonContent(icon_name="camera-photo-symbolic", label="Scanner le QR code"))
+        # Une rangée étroite : « Scanner le QR code » + « Image » en pilules demandaient
+        # 371 px, plus qu un téléphone (360) - toute la fenêtre se décentrait.
+        qr = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER)
+        scan = Gtk.Button(child=Adw.ButtonContent(icon_name="camera-photo-symbolic", label="Scanner le QR code"))
         scan.connect("clicked", self.on_scan_qr)
-        img = Gtk.Button(css_classes=["pill"], child=Adw.ButtonContent(icon_name="image-x-generic-symbolic", label="Image"),
-                         tooltip_text="Lire le QR code d'une image")
+        img = Gtk.Button(icon_name="image-x-generic-symbolic", tooltip_text="Lire le QR code d'une image")
         img.connect("clicked", self.on_scan_image)
         qr.append(scan); qr.append(img)
         box.append(qr)
