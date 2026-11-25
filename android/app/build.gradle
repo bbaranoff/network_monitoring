@@ -11,8 +11,12 @@ android {
         applicationId "org.osmooperator.app"
         minSdk 29
         targetSdk 34
-        versionCode 8
-        versionName "0.8"
+        versionCode 9
+        versionName "0.8.1"
+        // Les telephones seulement (ARM 64 et 32 bits) : avec x86 et x86_64, qui
+        // ne servent qu aux emulateurs, l APK pesait 141 Mo - un telechargement
+        // tronque sur le telephone donne « package non valide ».
+        ndk { abiFilters "arm64-v8a", "armeabi-v7a" }
     }
 
     // UNE CLE DE SIGNATURE FIXE, quand elle est fournie (BANC_KEYSTORE, un PKCS#12
