@@ -49,6 +49,7 @@ import android.telephony.CellInfoLte
 import android.telephony.CellInfoNr
 import android.telephony.CellInfoWcdma
 import android.telephony.CellSignalStrengthNr
+import android.telecom.TelecomManager
 import android.telephony.TelephonyManager
 import android.provider.Settings
 import android.text.Editable
@@ -165,6 +166,7 @@ class MainActivity : Activity() {
         }
 
         override fun onCallStateChanged(core: Core, call: Call, state: Call.State?, message: String) {
+            if (Bench.native(this@MainActivity)) return           // the native Phone app has the call
             val peer = call.remoteAddress.username ?: call.remoteAddress.asStringUriOnly()
             when (state) {
                 Call.State.IncomingReceived -> {
@@ -200,6 +202,10 @@ class MainActivity : Activity() {
         override fun onMessageReceived(core: Core, chatRoom: ChatRoom, message: ChatMessage) {
             val from = message.fromAddress.username ?: "?"
             val body = message.utf8Text ?: ""
+            if (Bench.native(this@MainActivity)) {                // proxy on: a system notification
+                Bench.notify(this@MainActivity, "SMS de $from", body)
+                return
+            }
             log("SMS de $from : $body")
             bubble(from, body, false)
             if (msgTo.text.isBlank()) msgTo.setText(from)
@@ -284,9 +290,12 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.tab_messages).setOnClickListener { show("messages") }
         findViewById<Button>(R.id.tab_proxy).setOnClickListener { show("proxy") }
         findViewById<EditText>(R.id.proxy_dest).setText(prefs.getString("proxy_dest", "100101"))
+        findViewById<Button>(R.id.btn_natif_on).setOnClickListener { natif(true) }
+        findViewById<Button>(R.id.btn_natif_off).setOnClickListener { natif(false) }
+        findViewById<Button>(R.id.btn_natif_comptes).setOnClickListener { openAccounts() }
         findViewById<Button>(R.id.btn_proxy_on).setOnClickListener { proxy(true) }
         findViewById<Button>(R.id.btn_proxy_off).setOnClickListener { proxy(false) }
-        if (Proxy.enabled(this)) startForegroundService(Intent(this, ProxyService::class.java))
+        if (Proxy.enabled(this) || Bench.native(this)) startForegroundService(Intent(this, ProxyService::class.java))
         listOf(R.id.btn_theme0, R.id.btn_theme1, R.id.btn_theme2).forEachIndexed { i, id ->
             findViewById<Button>(id).setOnClickListener {
                 if (prefs.getInt("theme", 0) != i) { prefs.edit().putInt("theme", i).apply(); recreate() }
@@ -330,9 +339,11 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.tab_account).setOnClickListener { show("account") }
         spectrum.onSwipe = { dir -> nodeStep(-dir) }          // swipe left: the next pane
 
-        core = Factory.instance().createCore(null, null, this)
+        // The SIP stack belongs to the process, not to this screen: with the
+        // proxy on, the native Phone app drives it while the activity is gone.
+        core = Bench.core ?: Factory.instance().createCore(null, null, applicationContext).also { it.start() }
+        Bench.hook(this, core)
         core.addListener(listener)
-        core.start()
 
         val wanted = arrayOf(
             Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION,
@@ -350,6 +361,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (tab == "proxy") natifNote()                     // back from the calling-accounts screen
         ui.post(poll)
     }
 
@@ -361,7 +373,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         frameSource?.stop()
         core.removeListener(listener)
-        core.stop()
+        if (!Bench.native(this)) { core.stop(); Bench.core = null }
         super.onDestroy()
     }
 
@@ -478,7 +490,7 @@ class MainActivity : Activity() {
         vis(R.id.panel_node, name == "node")
         vis(R.id.panel_account, name == "account")
         vis(R.id.panel_proxy, name == "proxy")
-        if (name == "proxy") proxyNote()
+        if (name == "proxy") { proxyNote(); natifNote() }
         vis(R.id.nav_radio, name == "radio")
         vis(R.id.nav_node, name == "node")
         listOf("cell" to R.id.sub_cell, "frames" to R.id.sub_frames, "log" to R.id.sub_log).forEach { (k, id) ->
@@ -785,6 +797,7 @@ class MainActivity : Activity() {
         val keepMode = mode
         val keepTheme = prefs.getInt("theme", 0)
         if (Proxy.enabled(this)) proxy(false)                    // no account, no proxy
+        if (Bench.native(this)) natif(false)
         prefs.edit().clear().putString("node", keepNode).putInt("mode", keepMode).putInt("theme", keepTheme).apply()
         online = "Hors ligne"
         show("phone")
@@ -827,7 +840,63 @@ class MainActivity : Activity() {
         msgText.setText("")
     }
 
-    // ── The proxy: the SIM of this phone, lent to the bench (Proxy.kt) ───────
+    // ── The proxy: the bench in the native apps of the phone (Natif.kt) ──────
+    private fun natifNote(extra: String = "") {
+        val on = Bench.native(this)
+        findViewById<TextView>(R.id.natif_state).text = (if (extra.isEmpty()) "" else "$extra\n") + when {
+            !on -> "Proxy inactif : appels et SMS du banc s'affichent dans cette appli."
+            Bench.accountEnabled(this) -> "Proxy ACTIF : le compte « Banc » est activé dans l'appli Téléphone."
+            else -> "Proxy actif, mais le compte « Banc » n'est pas encore activé dans l'appli Téléphone : " +
+                "touchez « Comptes téléphoniques », puis activez-le. Sans cela, les appels du banc ne sonnent nulle part."
+        }
+    }
+
+    private fun openAccounts() {
+        try { startActivity(Intent(TelecomManager.ACTION_CHANGE_PHONE_ACCOUNTS)) }
+        catch (e: Exception) { natifNote("Ouvrez l'appli Téléphone > Paramètres > Appels > Comptes téléphoniques.") }
+    }
+
+    /** The permissions were answered: the activation goes on by itself. */
+    override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
+        super.onRequestPermissionsResult(code, perms, results)
+        val granted = results.isNotEmpty() && results.all { it == PackageManager.PERMISSION_GRANTED }
+        when (code) {
+            2 -> if (granted) proxy(true) else proxyNote("Sans ces autorisations, la SIM ne peut pas être prêtée au banc.")
+            3 -> if (granted) natif(true) else natifNote("Sans ces autorisations, les appels du banc ne peuvent pas passer par l'appli Téléphone.")
+        }
+    }
+
+    private fun natif(on: Boolean) {
+        if (on) {
+            if (!enrolled) return natifNote("Il faut d'abord un compte sur un nœud (onglet Tél.).")
+            val missing = (arrayOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.RECORD_AUDIO) +
+                (if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else emptyArray()))
+                .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+            if (missing.isNotEmpty()) {
+                requestPermissions(missing.toTypedArray(), 3)
+                return natifNote("Autorisez le micro, le téléphone et les notifications, puis touchez Activer de nouveau.")
+            }
+            try {
+                Bench.register(this)
+            } catch (e: Exception) {
+                return natifNote("Android a refusé le compte téléphonique : ${e.message ?: e.javaClass.simpleName}")
+            }
+            prefs.edit().putBoolean("natif", true).apply()
+            startForegroundService(Intent(this, ProxyService::class.java))      // keeps the SIP stack alive, app closed
+            showCall(null, "")
+            log("Proxy : appels et SMS du banc dans les applis du téléphone")
+            // The one step Android reserves to the user: the switch of the account.
+            // The app opens the screen itself; nothing else to look for.
+            if (!Bench.accountEnabled(this)) openAccounts()
+        } else {
+            prefs.edit().putBoolean("natif", false).apply()
+            Bench.unregister(this)
+            log("Proxy désactivé : appels et SMS du banc dans cette appli")
+        }
+        natifNote()
+    }
+
+    // ── Lending the SIM to the bench (Proxy.kt) ──────────────────────────────
     private val PROXY_PERMS = arrayOf(
         Manifest.permission.RECEIVE_SMS, Manifest.permission.SEND_SMS,
         Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_CALL_LOG

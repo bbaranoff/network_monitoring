@@ -75,7 +75,15 @@
                     </LinearLayout>
                 </LinearLayout>
                 <LinearLayout android:id="@+id/panel_proxy" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
-                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:textSize="18sp" android:text="Proxy : la carte SIM de ce téléphone au service du banc"/>
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:textSize="18sp" android:text="Proxy : le banc dans les applis du téléphone"/>
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="8dp" android:text="Activé, les appels du numéro du banc sonnent dans l&apos;appli Téléphone normale (écran d&apos;appel, journal), et son clavier peut appeler par le compte « Banc ». Les SMS du banc arrivent en notification. Ils ne s&apos;affichent plus ici."/>
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                        <Button android:id="@+id/btn_natif_on" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Activer" android:textAllCaps="false"/>
+                        <Button android:id="@+id/btn_natif_off" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Désactiver" android:textAllCaps="false"/>
+                    </LinearLayout>
+                    <Button android:id="@+id/btn_natif_comptes" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Comptes téléphoniques (activer « Banc »)" android:textAllCaps="false"/>
+                    <TextView android:id="@+id/natif_state" android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="8dp" android:paddingBottom="22dp" android:textIsSelectable="true"/>
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:textSize="18sp" android:text="Prêter la carte SIM au banc"/>
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="8dp" android:text="Les SMS reçus par la SIM arrivent aussi sur le banc ; un SMS du banc vers un numéro extérieur (06…, +33…) part par cette SIM. Quand la SIM sonne, le banc est prévenu. La voix d&apos;un appel ne passe pas par l&apos;appli : Android ne la donne à aucune appli."/>
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="14dp" android:textStyle="bold" android:text="Destinataire sur le banc"/>
                     <EditText android:id="@+id/proxy_dest" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="100101 ou 3001" android:inputType="phone"/>

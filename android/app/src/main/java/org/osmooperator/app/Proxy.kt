@@ -138,7 +138,7 @@ class ProxyService : Service() {
         nm.createNotificationChannel(NotificationChannel("proxy", "Proxy du banc", NotificationManager.IMPORTANCE_LOW))
         val n = Notification.Builder(this, "proxy")
             .setContentTitle("Proxy du banc actif")
-            .setContentText("Les SMS de cette SIM sont partagés avec le nœud.")
+            .setContentText("Le banc reste joignable, appli fermée.")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)
             .build()
@@ -153,8 +153,14 @@ class ProxyService : Service() {
 
     private fun loop() {
         var announced = 0L
-        while (running && Proxy.enabled(this)) {
+        // Also the keeper of the process while the bench lives in the native
+        // apps (Natif.kt): the SIP stack must stay up with the screen closed.
+        while (running && (Proxy.enabled(this) || Bench.native(this))) {
             val now = System.currentTimeMillis()
+            if (!Proxy.enabled(this)) {
+                try { Thread.sleep(5000) } catch (e: InterruptedException) { break }
+                continue
+            }
             if (now - announced > 30000) {
                 Proxy.announce(this, true)
                 announced = now
