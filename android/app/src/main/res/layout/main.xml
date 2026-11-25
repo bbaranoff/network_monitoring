@@ -24,6 +24,18 @@
 
         <ScrollView android:id="@+id/scroll" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true">
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingLeft="16dp" android:paddingRight="16dp">
+                <LinearLayout android:id="@+id/panel_quick" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:textSize="22sp" android:text="Démarrage rapide"/>
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="6dp" android:paddingBottom="10dp" android:text="Tout ce qu&apos;il faut régler, dans l&apos;ordre. Touchez chaque étape ; une coche ✓ apparaît quand elle est faite. Les trois dernières sont facultatives."/>
+                    <Button android:id="@+id/q_scan" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="1. Rejoindre le nœud : scanner le QR code d&apos;invitation" android:textAllCaps="false" android:gravity="start|center_vertical"/>
+                    <Button android:id="@+id/q_perms" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="2. Autorisations : micro, téléphone, notifications, SMS, Bluetooth" android:textAllCaps="false" android:gravity="start|center_vertical"/>
+                    <Button android:id="@+id/q_natif" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="3. Appels du banc dans l&apos;appli Téléphone (compte « Banc »)" android:textAllCaps="false" android:gravity="start|center_vertical"/>
+                    <Button android:id="@+id/q_sim" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="4. Prêter la carte SIM au banc pour les SMS" android:textAllCaps="false" android:gravity="start|center_vertical"/>
+                    <Button android:id="@+id/q_rcs" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="5. Relayer aussi les messages RCS (accès aux notifications)" android:textAllCaps="false" android:gravity="start|center_vertical"/>
+                    <Button android:id="@+id/q_bt" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="6. Appels par la SIM : associer ce téléphone au nœud en Bluetooth" android:textAllCaps="false" android:gravity="start|center_vertical"/>
+                    <TextView android:id="@+id/q_state" android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingTop="10dp" android:textIsSelectable="true"/>
+                    <Button android:id="@+id/q_done" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Terminer" android:textAllCaps="false" android:gravity="start|center_vertical"/>
+                </LinearLayout>
                 <LinearLayout android:id="@+id/panel_join" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Rejoindre un nœud : un numéro du réseau, sans carte SIM." android:textSize="16sp" android:paddingBottom="8dp"/>
                     <EditText android:id="@+id/user" android:layout_width="match_parent" android:layout_height="wrap_content" android:hint="Pseudo (ou identifiant SIP)" android:inputType="text"/>
@@ -125,6 +137,7 @@
                         <Button android:id="@+id/btn_theme2" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Système" android:textAllCaps="false"/>
                     </LinearLayout>
                     <TextView android:id="@+id/account" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:paddingTop="14dp" android:textIsSelectable="true"/>
+                    <Button android:id="@+id/btn_quick" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Démarrage rapide" android:textAllCaps="false"/>
                     <Button android:id="@+id/btn_wipe" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Effacer les appels et conversations" android:textAllCaps="false"/>
                     <Button android:id="@+id/btn_leave" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Quitter ce nœud" android:textAllCaps="false"/>
                 </LinearLayout>

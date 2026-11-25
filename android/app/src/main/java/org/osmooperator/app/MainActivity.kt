@@ -300,6 +300,23 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btn_natif_on).setOnClickListener { natif(true) }
         findViewById<Button>(R.id.btn_natif_off).setOnClickListener { natif(false) }
         findViewById<Button>(R.id.btn_natif_comptes).setOnClickListener { openAccounts() }
+        // the quick start: every setting of the first run, in order
+        findViewById<Button>(R.id.btn_quick).setOnClickListener { show("quick") }
+        findViewById<Button>(R.id.q_scan).setOnClickListener { quickFrom = true; scanQr() }
+        findViewById<Button>(R.id.q_perms).setOnClickListener {
+            val missing = ALL_PERMS.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+            if (missing.isEmpty()) quickNote() else requestPermissions(missing.toTypedArray(), 6)
+        }
+        findViewById<Button>(R.id.q_natif).setOnClickListener { natif(true); quickNote() }
+        findViewById<Button>(R.id.q_sim).setOnClickListener { proxy(true); ui.postDelayed({ quickNote() }, 2500) }
+        findViewById<Button>(R.id.q_rcs).setOnClickListener {
+            try { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) } catch (e: Exception) { }
+        }
+        findViewById<Button>(R.id.q_bt).setOnClickListener { btPair(); ui.postDelayed({ quickNote() }, 4000) }
+        findViewById<Button>(R.id.q_done).setOnClickListener {
+            prefs.edit().putBoolean("quick_done", true).apply()
+            show(if (enrolled) "phone" else "radio")
+        }
         findViewById<Button>(R.id.btn_bt_pair).setOnClickListener { btPair() }
         findViewById<Button>(R.id.btn_proxy_rcs).setOnClickListener {
             try { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
@@ -369,7 +386,8 @@ class MainActivity : Activity() {
         node.setText(host)
         if (enrolled) register()
         applyMode()
-        show(if (mode == 0 || enrolled) "phone" else "radio")
+        // first run: the quick start takes the screen
+        show(if (!prefs.getBoolean("quick_done", false)) "quick" else if (mode == 0 || enrolled) "phone" else "radio")
         if (host.isNotEmpty()) trunk(null)
         netNote()
     }
@@ -377,6 +395,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (tab == "proxy") { natifNote(); proxyNote() }    // back from a settings screen
+        if (tab == "quick") quickNote()
         ui.post(poll)
     }
 
@@ -498,6 +517,8 @@ class MainActivity : Activity() {
         vis(R.id.scroll, name != "messages" && !framesOn)
         vis(R.id.panel_frames, framesOn)
         vis(R.id.panel_messages, name == "messages")
+        vis(R.id.panel_quick, name == "quick")
+        if (name == "quick") quickNote()
         vis(R.id.panel_join, name == "phone" && !enrolled)
         vis(R.id.panel_phone, name == "phone" && enrolled)
         vis(R.id.panel_radio, name == "radio" && radioPage == "cell")
@@ -731,6 +752,43 @@ class MainActivity : Activity() {
         radioCells.text = if (cells.isEmpty()) "Aucune cellule donnée par le modem." else sb.toString()
     }
 
+    // ── The quick start ──────────────────────────────────────────────────────
+    private var quickFrom = false
+    private val ALL_PERMS: Array<String> = arrayOf(
+        Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_PHONE_NUMBERS,
+        Manifest.permission.READ_CALL_LOG, Manifest.permission.RECEIVE_SMS, Manifest.permission.SEND_SMS,
+        Manifest.permission.ACCESS_FINE_LOCATION
+    ) + (if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else emptyArray()) +
+        (if (Build.VERSION.SDK_INT >= 31) arrayOf(Manifest.permission.BLUETOOTH_CONNECT) else emptyArray())
+
+    /** A tick in front of what is done; what is still missing, in words. */
+    private fun quickNote() {
+        fun mark(id: Int, done: Boolean) {
+            val b = findViewById<Button>(id)
+            val t = b.text.toString().removePrefix("✓ ")
+            b.text = if (done) "✓ $t" else t
+        }
+        val perms = ALL_PERMS.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+        mark(R.id.q_scan, enrolled)
+        mark(R.id.q_perms, perms)
+        mark(R.id.q_natif, Bench.nativeActive(this))
+        mark(R.id.q_sim, Proxy.enabled(this))
+        mark(R.id.q_rcs, rcsAllowed())
+        val st = findViewById<TextView>(R.id.q_state)
+        st.text = when {
+            !enrolled -> "Commencez par l'étape 1 : sans compte sur un nœud, le reste ne peut pas se régler."
+            !perms -> "Compte : ${prefs.getString("msisdn", "")} sur ${host}. Accordez les autorisations (étape 2)."
+            Bench.native(this) && !Bench.accountEnabled(this) ->
+                "Étape 3 : activez le compte « Banc » dans l'écran des comptes téléphoniques, puis revenez ici."
+            Bench.nativeActive(this) && !Bench.redirects(this) ->
+                "Étape 3 : acceptez aussi la redirection des appels, pour que le clavier natif confie les numéros du banc à « Banc »."
+            else -> "Compte : ${prefs.getString("msisdn", "")} sur ${host}. Les étapes 3 à 6 sont à choisir selon l'usage ; touchez Terminer quand c'est bon."
+        }
+        if (enrolled && host.isNotEmpty()) bg({ Proxy.call(this, "/proxy/bluetooth", null) ?: JSONObject() }) { d, _ ->
+            mark(R.id.q_bt, d?.optJSONObject("ligne")?.optBoolean("connecte") == true)
+        }
+    }
+
     // ── The invitation QR code ───────────────────────────────────────────────
     // osmo-inscription.py --nouveau-qrcode PSEUDO shows a QR code that carries
     //   osmo://inscription?noeud=<address>&pseudo=<pseudo>&code=<16 characters>
@@ -784,7 +842,8 @@ class MainActivity : Activity() {
                     .apply()
                 register()
                 startForegroundService(Intent(this, ProxyService::class.java))
-                show("phone")
+                show(if (quickFrom) "quick" else "phone")
+                quickFrom = false
             }
         }
     }
@@ -927,6 +986,7 @@ class MainActivity : Activity() {
         when (code) {
             2 -> if (granted) proxy(true) else proxyNote("Sans ces autorisations, la SIM ne peut pas être prêtée au banc.")
             3 -> if (granted) natif(true) else natifNote("Sans ces autorisations, les appels du banc ne peuvent pas passer par l'appli Téléphone.")
+            6 -> quickNote()
             4 -> if (granted) btPair() else btShow(JSONObject().put("ok", true).put("message", "Sans l'autorisation Bluetooth, l'appli ne peut pas lancer l'association."))
         }
     }
