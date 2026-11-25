@@ -1648,7 +1648,7 @@ class NodeUi:
         self.phone_stack.add_named(page, "join")
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=12, margin_bottom=16,
-                      margin_start=16, margin_end=16)
+                      margin_start=10, margin_end=10)          # 16 : 364 px, plus qu un téléphone
         self.call_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2,
                                  css_classes=["call-card"], visible=False)
         self.call_peer = Gtk.Label(xalign=0, css_classes=["call-peer"], ellipsize=Pango.EllipsizeMode.END)
@@ -1835,9 +1835,12 @@ class NodeUi:
                                   top_margin=8, left_margin=8, right_margin=8, bottom_margin=8,
                                   css_classes=["console"])
         v.append(Gtk.ScrolledWindow(vexpand=True, child=self.n_out, css_classes=["card"]))
-        quick = Gtk.Box(spacing=6, homogeneous=True)
+        # Not homogeneous, no pills: three pills of equal width asked for 390 px,
+        # more than a phone (360) - the whole window overflowed in Expert, and in
+        # Basique too (the hidden tab still counts in the window's width).
+        quick = Gtk.Box(spacing=6)
         for label, cmd in (("abonnés", "show subscriber all"), ("stats", "show stats"), ("version", "show version")):
-            b = Gtk.Button(label=label, css_classes=["pill"])
+            b = Gtk.Button(label=label, hexpand=True)
             b.connect("clicked", lambda _b, c=cmd: self.on_vty(c))
             quick.append(b)
         v.append(quick)
