@@ -773,6 +773,7 @@ class MainActivity : Activity() {
     private var quickFrom = false
     private val ALL_PERMS: Array<String> = arrayOf(
         Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_PHONE_NUMBERS,
+        Manifest.permission.CALL_PHONE,
         Manifest.permission.READ_CALL_LOG, Manifest.permission.RECEIVE_SMS, Manifest.permission.SEND_SMS,
         Manifest.permission.ACCESS_FINE_LOCATION
     ) + (if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else emptyArray()) +
@@ -1031,6 +1032,7 @@ class MainActivity : Activity() {
         if (on) {
             if (!enrolled) return natifNote("Il faut d'abord un compte sur un nœud (onglet Tél.).")
             val missing = (arrayOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_PHONE_NUMBERS,
+                Manifest.permission.CALL_PHONE,
                 Manifest.permission.RECORD_AUDIO) +
                 (if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else emptyArray()))
                 .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }

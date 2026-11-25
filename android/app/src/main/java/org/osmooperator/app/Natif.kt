@@ -84,6 +84,18 @@ object Bench {
         if (m != prefs(ctx).getString("numeros_banc", null)) prefs(ctx).edit().putString("numeros_banc", m).apply()
     }
 
+    /** A call through the native Phone app, on the account of the bench. */
+    @android.annotation.SuppressLint("MissingPermission")
+    fun place(ctx: Context, num: String) {
+        try {
+            telecom(ctx).placeCall(Uri.fromParts(PhoneAccount.SCHEME_TEL, num, null), Bundle().apply {
+                putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle(ctx))
+            })
+        } catch (e: Exception) {
+            notify(ctx, "Appel par le banc impossible", "$num : ${e.message ?: e.javaClass.simpleName}")
+        }
+    }
+
     /** True when the app holds the call-redirection role (asked at activation). */
     fun redirects(ctx: Context): Boolean = try {
         val rm = ctx.getSystemService(android.app.role.RoleManager::class.java)
@@ -267,8 +279,13 @@ class BenchRedirect : android.telecom.CallRedirectionService() {
         val num = (handle.schemeSpecificPart ?: "").replace(" ", "").replace("-", "")
         val banc = Bench.handle(this)
         if (Bench.nativeActive(this) && initialPhoneAccount != banc && Bench.isBenchNumber(this, num)) {
-            Bench.notify(this, "Clavier natif", "$num est un numéro du banc : appel confié au compte « Banc ».")
-            redirectCall(handle, banc, false)
+            // NOT redirectCall(): some systems (ColorOS 12, seen with dumpsys
+            // telecom) start the call on the SIM without waiting for the answer,
+            // and the new account is ignored. The call of the SIM is CANCELLED,
+            // and the same number is placed again, on the account of the bench.
+            cancelCall()
+            val app = applicationContext
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ Bench.place(app, num) }, 500)
         } else {
             placeCallUnmodified()
         }
