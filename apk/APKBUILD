@@ -3,7 +3,7 @@
 # (abuild dans le chroot natif de pmbootstrap) ; ne pas lancer abuild ici
 # directement, les sources sont dans le dossier parent.
 pkgname=network-monitor
-pkgver=0.9.2
+pkgver=0.10
 pkgrel=0
 pkgdesc="Cellular monitor and SIM-less phone for Phosh, client of an osmo-operator node"
 url="https://github.com/bbaranoff/osmo-operator"
@@ -13,7 +13,10 @@ depends="python3 py3-gobject3 py3-cairo gtk4.0 libadwaita libsoup3 libmm-glib mo
 options="!check"
 source="network-monitor.py
 	org.osmocom.NetworkMonitor.desktop
-	org.osmocom.NetworkMonitor.svg"
+	org.osmocom.NetworkMonitor.svg
+	clair.jpg
+	sombre.jpg
+	telecom.jpg"
 builddir="$srcdir"
 
 package() {
@@ -22,10 +25,16 @@ package() {
 		"$pkgdir"/usr/share/applications/org.osmocom.NetworkMonitor.desktop
 	install -Dm644 "$srcdir"/org.osmocom.NetworkMonitor.svg \
 		"$pkgdir"/usr/share/icons/hicolor/scalable/apps/org.osmocom.NetworkMonitor.svg
+	for f in clair sombre telecom; do
+		install -Dm644 "$srcdir"/$f.jpg "$pkgdir"/usr/share/network-monitor/fonds/$f.jpg
+	done
 }
 
 sha512sums="
-fc000110ed1f6b6b323e86cb35c451c5c628eb06cf70378b469153f5accec0ccf7a2daa9d672a1537c2a03378c0c050a0acba19e0515b1578680a0b49aae6ac9  network-monitor.py
+67b1fa1885a26b9e21cb8b0bdd1b8b96e30652af6b964d5d52865167ad05409d9d3f633f6cd3ae556fded427aabaf769bba9bb8339882f2dbee4d8616b8de5e0  network-monitor.py
 2f9992b48270c11c67fddd1b13486acb66352c42ab96813772259ca290ce8b01572d43678dd3816c9df09c70f2e9caeb30b3f4e114c223d7b2190961cd7aa562  org.osmocom.NetworkMonitor.desktop
 94085b63c8e522da2d9a897311f8de50e78e15548aaf1a7224b269500ce48d0a9569d7ee995674fd06f23bef27885aaaccde0f171a33de3c1cb9c6fce95d7bb6  org.osmocom.NetworkMonitor.svg
+f18c0dcd424a86a469c27fe0c0d7c3d63a4552022b77336bfb805af2654436a63388e346e0234492b511a6e81afd2da1df0b260111d7aabe3fbca9be91943605  clair.jpg
+56ddc8e28fc4d3c36f60d5b56fc408f536599493a7e2caa8824e0ce5bcacacfd3301ff3a1f7ccdf5e41b67da7c1c84b667455bd22e9719d45464357c64ded354  sombre.jpg
+20628db41dfdece3059871077c2c4da89e117930e56e2771edde4de8df875ea44dbbf5c1cabbd7b118540235adc0bc0767a76637d5fe778b43a19e2c3660fb5b  telecom.jpg
 "

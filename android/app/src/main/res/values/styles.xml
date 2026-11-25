@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The "Télécom" theme: the violet night, the cyan and the orange of the
+         poster of the bench (osmo-operator wallpaper). -->
+    <style name="Telco" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:colorPrimary">#120D26</item>
+        <item name="android:colorPrimaryDark">#0C081C</item>
+        <item name="android:colorAccent">#3CC8F5</item>
+        <item name="android:colorControlActivated">#3CC8F5</item>
+        <item name="android:colorControlHighlight">#553CC8F5</item>
+        <item name="android:colorButtonNormal">#CC2A2160</item>
+        <item name="android:textColorPrimary">#EEF4FF</item>
+        <item name="android:textColorSecondary">#B9C3E6</item>
+        <item name="android:textColorLink">#FF9A3C</item>
+        <item name="android:statusBarColor">#0C081C</item>
+        <item name="android:navigationBarColor">#0C081C</item>
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>

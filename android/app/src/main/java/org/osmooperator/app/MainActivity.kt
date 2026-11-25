@@ -40,6 +40,7 @@ import android.net.Uri
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -238,11 +239,17 @@ class MainActivity : Activity() {
         prefs = getSharedPreferences("compte", MODE_PRIVATE)
         val th = prefs.getInt("theme", 0)
         val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-        dark = th == 1 || (th == 2 && night)
-        setTheme(if (dark) android.R.style.Theme_Material_NoActionBar else android.R.style.Theme_Material_Light_NoActionBar)
+        // ... and "Télécom" (3): dark, in the colours of the bench poster.
+        dark = th == 1 || th == 3 || (th == 2 && night)
+        setTheme(if (th == 3) R.style.Telco else if (dark) android.R.style.Theme_Material_NoActionBar
+            else android.R.style.Theme_Material_Light_NoActionBar)
         super.onCreate(savedInstanceState)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         setContentView(R.layout.main)
+        // The background: the illustrations of the osmo-operator desktop (the
+        // city, the mast, the landscape), cropped and veiled so the text reads.
+        window.setBackgroundDrawable(CoverDrawable(BitmapFactory.decodeResource(resources,
+            if (th == 3) R.drawable.fond_telecom else if (dark) R.drawable.fond_sombre else R.drawable.fond_clair)))
 
         status = findViewById(R.id.status)
         journal = findViewById(R.id.journal)
@@ -335,12 +342,12 @@ class MainActivity : Activity() {
         // With an account, the line is held with the app closed: a foreground
         // service keeps the process (and the SIP stack) alive, so a call rings.
         if (enrolled) startForegroundService(Intent(this, ProxyService::class.java))
-        listOf(R.id.btn_theme0, R.id.btn_theme1, R.id.btn_theme2).forEachIndexed { i, id ->
+        listOf(R.id.btn_theme0, R.id.btn_theme1, R.id.btn_theme2, R.id.btn_theme3).forEachIndexed { i, id ->
             findViewById<Button>(id).setOnClickListener {
                 if (prefs.getInt("theme", 0) != i) { prefs.edit().putInt("theme", i).apply(); recreate() }
             }
         }
-        themeState.text = "Thème : ${listOf("Clair", "Sombre", "Comme le système")[th]}"
+        themeState.text = "Thème : ${listOf("Clair", "Sombre", "Comme le système", "Télécom").getOrElse(th) { "Clair" }}"
         // the frames: filter, pause, clear, and the families in one touch
         findViewById<EditText>(R.id.frames_filter).addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(e: Editable?) { frames.query = e?.toString() ?: ""; framesNote() }
@@ -1250,4 +1257,22 @@ class MainActivity : Activity() {
         }
         netNote("Aucun écran de réglage réseau accessible sur ce téléphone.")
     }
+}
+
+/** A picture that COVERS its bounds, centred, never stretched (a window
+ *  background is otherwise deformed to the size of the screen). */
+class CoverDrawable(private val bmp: android.graphics.Bitmap) : android.graphics.drawable.Drawable() {
+    private val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+    private val m = android.graphics.Matrix()
+    override fun draw(canvas: android.graphics.Canvas) {
+        val b = bounds
+        val k = maxOf(b.width().toFloat() / bmp.width, b.height().toFloat() / bmp.height)
+        m.setScale(k, k)
+        m.postTranslate(b.left + (b.width() - bmp.width * k) / 2f, b.top + (b.height() - bmp.height * k) / 2f)
+        canvas.drawBitmap(bmp, m, paint)
+    }
+    override fun setAlpha(alpha: Int) { paint.alpha = alpha }
+    override fun setColorFilter(cf: android.graphics.ColorFilter?) { paint.colorFilter = cf }
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity(): Int = android.graphics.PixelFormat.OPAQUE
 }

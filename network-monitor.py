@@ -79,7 +79,7 @@ LOC_3GPP_LAC_CI = 1 << 0       # MM_MODEM_LOCATION_SOURCE_3GPP_LAC_CI (1 << 1 se
 ACT_5GNR = 1 << 15             # MM_MODEM_ACCESS_TECHNOLOGY_5GNR
 
 APP_ID = "org.osmocom.NetworkMonitor"
-VERSION = "0.9.2"
+VERSION = "0.10"
 HISTORY_S = 600          # 10 min d historique par mesure
 POLL_S = 2               # cadence de lecture
 FRAMES_MAX = 2000        # trames gardees a l ecran
@@ -1817,7 +1817,52 @@ TRUNKS = {"zadarma": "Zadarma", "dongle": "Dongle"}
 MODES = ("Basique", "Medium", "Expert")
 # (clé des réglages, libellé, schéma libadwaita) ; le premier est le défaut.
 THEMES = (("clair", "Clair", Adw.ColorScheme.FORCE_LIGHT), ("sombre", "Sombre", Adw.ColorScheme.FORCE_DARK),
+          ("telecom", "Télécom", Adw.ColorScheme.FORCE_DARK),
           ("systeme", "Comme le système", Adw.ColorScheme.DEFAULT))
+
+# Les fonds : les illustrations du bureau d osmo-operator (la ville, le pylône,
+# le paysage), recadrées en portrait et voilées pour que le texte reste lisible.
+FONDS = [d for d in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "fonds"),
+                     "/usr/share/network-monitor/fonds") if os.path.isdir(d)]
+
+# Le thème Télécom : la nuit violette, le cyan et l orange de l affiche du banc.
+CSS_TELECOM = """
+@define-color accent_bg_color #1aa7d8;
+@define-color accent_fg_color #ffffff;
+@define-color accent_color #55d3ff;
+@define-color window_bg_color #120d26;
+@define-color window_fg_color #eef4ff;
+@define-color view_bg_color #17112f;
+@define-color headerbar_bg_color #120d26;
+@define-color headerbar_backdrop_color #120d26;
+@define-color card_bg_color rgba(40, 32, 84, 0.72);
+@define-color dialog_bg_color #1a1436;
+@define-color popover_bg_color #1f183f;
+@define-color sidebar_bg_color #150f2c;
+@define-color success_color #5ee6a8;
+@define-color warning_color #ff9a3c;
+button.suggested-action { background-color: #ff7a1a; color: #ffffff; }
+"""
+
+
+def css_theme(key, sombre):
+    """Le CSS d un thème : son fond illustré, et les couleurs du thème Télécom."""
+    nom = key if key in ("clair", "sombre", "telecom") else ("sombre" if sombre else "clair")
+    css = CSS_TELECOM if key == "telecom" else ""
+    if nom == "sombre":             # des cartes plus denses : le pylône reste derrière
+        css += "@define-color card_bg_color rgba(28, 28, 40, 0.78);\n"
+    for d in FONDS:
+        f = os.path.join(d, nom + ".jpg")
+        if os.path.exists(f):
+            css += ("""
+window.background { background-image: url("file://%s"); background-size: cover;
+                    background-position: center; background-repeat: no-repeat; }
+window.background headerbar, window.background toolbarview > .top-bar,
+window.background toolbarview > .bottom-bar, window.background viewswitcherbar,
+window.background actionbar > revealer > box { background: transparent; box-shadow: none; }
+""" % f)
+            break
+    return css
 MODE_RADIO = (None, ("cell", "signal", "neighbors", "frames", "log"), ("cell", "signal", "neighbors", "frames", "log"))
 MODE_NODE = (None, ("bts", "ms", "services"), ("bts", "ms", "services", "console"))
 
@@ -2564,7 +2609,16 @@ class NodeUi:
     def apply_theme(self, key):
         """Applique le thème, rend son rang dans THEMES."""
         i = next((n for n, (k, _t, _s) in enumerate(THEMES) if k == key), 0)
-        Adw.StyleManager.get_default().set_color_scheme(THEMES[i][2])
+        sm = Adw.StyleManager.get_default()
+        sm.set_color_scheme(THEMES[i][2])
+        disp = Gdk.Display.get_default()
+        old = getattr(self, "_theme_prov", None)
+        if old is not None:
+            Gtk.StyleContext.remove_provider_for_display(disp, old)
+        prov = Gtk.CssProvider()
+        prov.load_from_data(css_theme(THEMES[i][0], sm.get_dark()).encode())
+        Gtk.StyleContext.add_provider_for_display(disp, prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+        self._theme_prov = prov
         return i
 
     def set_theme(self, key):
