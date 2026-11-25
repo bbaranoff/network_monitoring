@@ -3,7 +3,7 @@
 # (abuild dans le chroot natif de pmbootstrap) ; ne pas lancer abuild ici
 # directement, les sources sont dans le dossier parent.
 pkgname=network-monitor
-pkgver=0.10.2
+pkgver=0.10.4
 pkgrel=0
 pkgdesc="Cellular monitor and SIM-less phone for Phosh, client of an osmo-operator node"
 url="https://github.com/bbaranoff/osmo-operator"
@@ -30,9 +30,9 @@ package() {
 }
 
 sha512sums="
-3995d741a72cf470f9bc9c787030935d52b0fde2e9a0a6cd54ee6af2fa30d272665e8165839393c4f07d9a0610e835caedf55e0d33c3a25e807654ea154025ce  network-monitor.py
+e198ba93f107619d7c6e55830329a1fe5f9df8a9bf62de16a7c8abaa545744b4f937ba4d90ca7c11f2975e004eb4afb9d37f10f58007dcab4439457a3610132e  network-monitor.py
 2f9992b48270c11c67fddd1b13486acb66352c42ab96813772259ca290ce8b01572d43678dd3816c9df09c70f2e9caeb30b3f4e114c223d7b2190961cd7aa562  org.osmocom.NetworkMonitor.desktop
 94085b63c8e522da2d9a897311f8de50e78e15548aaf1a7224b269500ce48d0a9569d7ee995674fd06f23bef27885aaaccde0f171a33de3c1cb9c6fce95d7bb6  org.osmocom.NetworkMonitor.svg
-98c9f93762b2856fdc6cb13caf2483b5882750999bbfd4c23d9bf925efff6784b659b0a007b8dbb81349445eb0dd75af0dff2a52449cdeecfcc0d1f96f4db2e5  clair.jpg
-28a3428302471e341d7bb8b16ef4826188cf35916e0ecb8c5cff66c37f523ee2fdc741847909955449a8023d5d384a7b3c7c547ca6cc94426fb28f77fab37b73  sombre.jpg
+fdf8982df08bdbfacbce4a8646b57b323704dec8a36bdb508873d8e7f349c426be2d9a2ad658b2fc3a3ee78b98ed61423ddfd8dbfc9b4bd9c7d5fe20c54c5690  clair.jpg
+65522a2ed248e90765afc1a0b39d49b7fdd8b81253fe78e32cd33ecd27fe150f7b7fa0a75bac3ed6e44f4be3a33a8ac31cd080f41c11aa8112465f86f88c8433  sombre.jpg
 "

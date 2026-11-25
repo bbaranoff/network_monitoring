@@ -79,7 +79,7 @@ LOC_3GPP_LAC_CI = 1 << 0       # MM_MODEM_LOCATION_SOURCE_3GPP_LAC_CI (1 << 1 se
 ACT_5GNR = 1 << 15             # MM_MODEM_ACCESS_TECHNOLOGY_5GNR
 
 APP_ID = "org.osmocom.NetworkMonitor"
-VERSION = "0.10.2"
+VERSION = "0.10.4"
 HISTORY_S = 600          # 10 min d historique par mesure
 POLL_S = 2               # cadence de lecture
 FRAMES_MAX = 2000        # trames gardees a l ecran
@@ -1819,37 +1819,36 @@ MODES = ("Basique", "Medium", "Expert")
 THEMES = (("clair", "Clair", Adw.ColorScheme.FORCE_LIGHT), ("sombre", "Sombre", Adw.ColorScheme.FORCE_DARK),
           ("systeme", "Comme le système", Adw.ColorScheme.DEFAULT))
 
-# Les fonds : les deux fonds d écran du bureau d osmo-operator, recadrés en
-# portrait et voilés pour que le texte reste lisible - le bureau au repos
-# (gsm-lab-ville) pour le thème clair, le bureau quand un banc tourne
-# (gsm-lab-antenne) pour le thème sombre.
+# Les fonds : les deux fonds d écran du bureau d osmo-operator (osmo-balise),
+# recadrés en portrait sur le pylône et voilés pour que le texte reste
+# lisible - la ville de jour, au repos, pour le thème clair ; le soir, le
+# pylône qui émet (un banc tourne), pour le thème sombre.
 FONDS = [d for d in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "fonds"),
                      "/usr/share/network-monitor/fonds") if os.path.isdir(d)]
 
-# Le thème sombre : la nuit violette, le cyan et l orange de l affiche du banc.
+# Le thème sombre : le bleu nuit et l orange du couchant de ce fond.
 CSS_TELECOM = """
-@define-color accent_bg_color #1aa7d8;
+@define-color accent_bg_color #e8703a;
 @define-color accent_fg_color #ffffff;
-@define-color accent_color #55d3ff;
-@define-color window_bg_color #120d26;
-@define-color window_fg_color #eef4ff;
-@define-color view_bg_color #17112f;
-@define-color headerbar_bg_color #120d26;
-@define-color headerbar_backdrop_color #120d26;
-@define-color card_bg_color rgba(40, 32, 84, 0.72);
-@define-color dialog_bg_color #1a1436;
-@define-color popover_bg_color #1f183f;
-@define-color sidebar_bg_color #150f2c;
+@define-color accent_color #ffa25f;
+@define-color window_bg_color #0d1c33;
+@define-color window_fg_color #f1f5ff;
+@define-color view_bg_color #10223d;
+@define-color headerbar_bg_color #0d1c33;
+@define-color headerbar_backdrop_color #0d1c33;
+@define-color card_bg_color rgba(13, 30, 56, 0.78);
+@define-color dialog_bg_color #12264a;
+@define-color popover_bg_color #162c52;
+@define-color sidebar_bg_color #0d1c33;
 @define-color success_color #5ee6a8;
-@define-color warning_color #ff9a3c;
-button.suggested-action { background-color: #ff7a1a; color: #ffffff; }
+@define-color warning_color #ffc94d;
 """
 
 
 def css_theme(key, sombre):
     """Le CSS d un thème : son fond illustré, et les couleurs du thème Télécom."""
     nom = "sombre" if key in ("sombre", "telecom") or (key not in ("clair",) and sombre) else "clair"
-    css = CSS_TELECOM if nom == "sombre" else "@define-color card_bg_color rgba(255, 255, 255, 0.80);\n"
+    css = CSS_TELECOM if nom == "sombre" else "@define-color card_bg_color rgba(255, 255, 255, 0.84);\n"
     for d in FONDS:
         f = os.path.join(d, nom + ".jpg")
         if os.path.exists(f):
