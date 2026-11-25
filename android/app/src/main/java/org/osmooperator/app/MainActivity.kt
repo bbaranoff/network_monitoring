@@ -910,7 +910,8 @@ class MainActivity : Activity() {
     private fun natif(on: Boolean) {
         if (on) {
             if (!enrolled) return natifNote("Il faut d'abord un compte sur un nœud (onglet Tél.).")
-            val missing = (arrayOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.RECORD_AUDIO) +
+            val missing = (arrayOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_PHONE_NUMBERS,
+                Manifest.permission.RECORD_AUDIO) +
                 (if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else emptyArray()))
                 .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
             if (missing.isNotEmpty()) {

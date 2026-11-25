@@ -108,10 +108,21 @@ object Bench {
         try { telecom(ctx).unregisterPhoneAccount(handle(ctx)) } catch (e: Exception) { }
     }
 
-    /** True once the user enabled the account in the Phone app. */
-    fun accountEnabled(ctx: Context): Boolean = try {
-        telecom(ctx).getPhoneAccount(handle(ctx))?.isEnabled == true
-    } catch (e: Exception) { false }
+    /** True once the user enabled the account in the Phone app.
+     *
+     *  The list of call-capable accounts first: it only holds ENABLED accounts
+     *  and asks for READ_PHONE_STATE, which the app has. getPhoneAccount() alone
+     *  was wrong: since Android 12 it wants READ_PHONE_NUMBERS for an account
+     *  that is not self-managed, and without it throws (or returns null) - the
+     *  account looked disabled while it was enabled, and even the default one,
+     *  so the calls kept ringing in this app instead of the Phone app. */
+    @android.annotation.SuppressLint("MissingPermission")
+    fun accountEnabled(ctx: Context): Boolean {
+        val h = handle(ctx)
+        val listed = try { telecom(ctx).callCapablePhoneAccounts.contains(h) } catch (e: Exception) { false }
+        if (listed) return true
+        return try { telecom(ctx).getPhoneAccount(h)?.isEnabled == true } catch (e: Exception) { false }
+    }
 
     /** Hook the SIP stack once: its calls go to Telecom while the proxy is on. */
     fun hook(ctx: Context, c: Core) {

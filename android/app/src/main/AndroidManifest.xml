@@ -8,6 +8,8 @@
     <!-- Android only gives the cell list (Radio tab) with these two. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- Android 12+: reading one's own calling account (is "Banc" enabled?). -->
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
     <!-- The proxy (tab "Proxy"): this phone lends its SIM to the bench. SMS in
          both directions, and who is calling when the SIM rings. -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
