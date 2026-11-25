@@ -532,6 +532,8 @@ class FrameSource:
             return
         self.session = Soup.Session()
         self.session.set_timeout(8)
+        self.last_rx = time.monotonic()
+        GLib.timeout_add_seconds(10, self._watchdog)
         self._connect()
 
     def _connect(self):
@@ -563,6 +565,7 @@ class FrameSource:
             conn.close(Soup.WebsocketCloseCode.NORMAL, None)
             return
         self.conn, self.url = conn, url
+        self.last_rx = time.monotonic()
         conn.set_max_incoming_payload_size(4 << 20)
         conn.connect("message", self._message)
         conn.connect("closed", self._closed)
@@ -571,12 +574,32 @@ class FrameSource:
         self.tries = 0
         self.on_status("dashboard %s : capture demandée" % url, True)
 
+    def _watchdog(self):
+        """UN LIEN MUET EST UN LIEN MORT. Le banc émet sans cesse (Paging, SI,
+        mesures) : 25 s sans rien, c est que le chemin a changé sous le lien
+        (4G qui revient, route de secours) sans qu il se ferme. On le referme
+        et on se rebranche ; sans ça les trames ne défilent plus jamais."""
+        if self.stopped:
+            return False
+        if self.conn is not None and time.monotonic() - self.last_rx > 25:
+            self.on_status("lien muet depuis 25 s, on se rebranche…", False)
+            conn, self.conn = self.conn, None
+            try:
+                conn.close(Soup.WebsocketCloseCode.NORMAL, None)
+            except GLib.Error:
+                pass
+            self.last_rx = time.monotonic()
+            self.tries = 0
+            self._connect()
+        return True
+
     def _retry(self):
         # Une adresse apres l autre, vite ; toutes epuisees, on respire.
         delay = 2 if self.tries % len(self.urls) else 10
         GLib.timeout_add_seconds(delay, self._connect)
 
     def _message(self, _conn, mtype, data):
+        self.last_rx = time.monotonic()
         if mtype != Soup.WebsocketDataType.TEXT:
             return
         try:
@@ -616,6 +639,8 @@ class FrameSource:
         GLib.timeout_add_seconds(30, lambda: self.waiting.pop(frame_num, None) and False)
 
     def _closed(self, _conn):
+        if _conn is not self.conn:          # un ancien lien (chien de garde) : le courant reste
+            return
         self.conn = None
         if not self.stopped:
             self.on_status("lien avec le dashboard perdu, nouvel essai…", False)
