@@ -237,19 +237,21 @@ class MainActivity : Activity() {
         // The theme, before anything is drawn: light by default (0), dark (1),
         // as the system (2). Changing it recreates the activity.
         prefs = getSharedPreferences("compte", MODE_PRIVATE)
-        val th = prefs.getInt("theme", 0)
+        val th0 = prefs.getInt("theme", 0)
         val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
-        // ... and "Télécom" (3): dark, in the colours of the bench poster.
-        dark = th == 1 || th == 3 || (th == 2 && night)
-        setTheme(if (th == 3) R.style.Telco else if (dark) android.R.style.Theme_Material_NoActionBar
-            else android.R.style.Theme_Material_Light_NoActionBar)
+        // The dark one wears the colours of the bench poster (style Telco).
+        // (3 was a separate "Télécom" theme: now the dark one.)
+        val th = if (th0 == 3) 1 else th0
+        dark = th == 1 || (th == 2 && night)
+        setTheme(if (dark) R.style.Telco else android.R.style.Theme_Material_Light_NoActionBar)
         super.onCreate(savedInstanceState)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         setContentView(R.layout.main)
-        // The background: the illustrations of the osmo-operator desktop (the
-        // city, the mast, the landscape), cropped and veiled so the text reads.
+        // The background: the two wallpapers of the osmo-operator desktop, cropped
+        // and veiled so the text reads - the idle desktop for the light theme,
+        // the desktop of a running bench for the dark one.
         window.setBackgroundDrawable(CoverDrawable(BitmapFactory.decodeResource(resources,
-            if (th == 3) R.drawable.fond_telecom else if (dark) R.drawable.fond_sombre else R.drawable.fond_clair)))
+            if (dark) R.drawable.fond_sombre else R.drawable.fond_clair)))
 
         status = findViewById(R.id.status)
         journal = findViewById(R.id.journal)
@@ -342,12 +344,12 @@ class MainActivity : Activity() {
         // With an account, the line is held with the app closed: a foreground
         // service keeps the process (and the SIP stack) alive, so a call rings.
         if (enrolled) startForegroundService(Intent(this, ProxyService::class.java))
-        listOf(R.id.btn_theme0, R.id.btn_theme1, R.id.btn_theme2, R.id.btn_theme3).forEachIndexed { i, id ->
+        listOf(R.id.btn_theme0, R.id.btn_theme1, R.id.btn_theme2).forEachIndexed { i, id ->
             findViewById<Button>(id).setOnClickListener {
                 if (prefs.getInt("theme", 0) != i) { prefs.edit().putInt("theme", i).apply(); recreate() }
             }
         }
-        themeState.text = "Thème : ${listOf("Clair", "Sombre", "Comme le système", "Télécom").getOrElse(th) { "Clair" }}"
+        themeState.text = "Thème : ${listOf("Clair", "Sombre", "Comme le système").getOrElse(th) { "Clair" }}"
         // the frames: filter, pause, clear, and the families in one touch
         findViewById<EditText>(R.id.frames_filter).addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(e: Editable?) { frames.query = e?.toString() ?: ""; framesNote() }

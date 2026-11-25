@@ -25,7 +25,7 @@ sed -i "s/^pkgver=.*/pkgver=$VER/" apk/APKBUILD
 D="$CH/home/pmos/banc/network-monitor"
 rm -rf "$D"; mkdir -p "$D"
 cp apk/APKBUILD network-monitor.py org.osmocom.NetworkMonitor.desktop org.osmocom.NetworkMonitor.svg "$D/"
-cp fonds/clair.jpg fonds/sombre.jpg fonds/telecom.jpg "$D/"
+cp fonds/clair.jpg fonds/sombre.jpg "$D/"
 chown -R 12345:12345 "$CH/home/pmos/banc"
 
 $PMB chroot -- apk add -q abuild >/dev/null

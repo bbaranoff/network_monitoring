@@ -79,7 +79,7 @@ LOC_3GPP_LAC_CI = 1 << 0       # MM_MODEM_LOCATION_SOURCE_3GPP_LAC_CI (1 << 1 se
 ACT_5GNR = 1 << 15             # MM_MODEM_ACCESS_TECHNOLOGY_5GNR
 
 APP_ID = "org.osmocom.NetworkMonitor"
-VERSION = "0.10"
+VERSION = "0.10.2"
 HISTORY_S = 600          # 10 min d historique par mesure
 POLL_S = 2               # cadence de lecture
 FRAMES_MAX = 2000        # trames gardees a l ecran
@@ -1817,15 +1817,16 @@ TRUNKS = {"zadarma": "Zadarma", "dongle": "Dongle"}
 MODES = ("Basique", "Medium", "Expert")
 # (clé des réglages, libellé, schéma libadwaita) ; le premier est le défaut.
 THEMES = (("clair", "Clair", Adw.ColorScheme.FORCE_LIGHT), ("sombre", "Sombre", Adw.ColorScheme.FORCE_DARK),
-          ("telecom", "Télécom", Adw.ColorScheme.FORCE_DARK),
           ("systeme", "Comme le système", Adw.ColorScheme.DEFAULT))
 
-# Les fonds : les illustrations du bureau d osmo-operator (la ville, le pylône,
-# le paysage), recadrées en portrait et voilées pour que le texte reste lisible.
+# Les fonds : les deux fonds d écran du bureau d osmo-operator, recadrés en
+# portrait et voilés pour que le texte reste lisible - le bureau au repos
+# (gsm-lab-ville) pour le thème clair, le bureau quand un banc tourne
+# (gsm-lab-antenne) pour le thème sombre.
 FONDS = [d for d in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "fonds"),
                      "/usr/share/network-monitor/fonds") if os.path.isdir(d)]
 
-# Le thème Télécom : la nuit violette, le cyan et l orange de l affiche du banc.
+# Le thème sombre : la nuit violette, le cyan et l orange de l affiche du banc.
 CSS_TELECOM = """
 @define-color accent_bg_color #1aa7d8;
 @define-color accent_fg_color #ffffff;
@@ -1847,10 +1848,8 @@ button.suggested-action { background-color: #ff7a1a; color: #ffffff; }
 
 def css_theme(key, sombre):
     """Le CSS d un thème : son fond illustré, et les couleurs du thème Télécom."""
-    nom = key if key in ("clair", "sombre", "telecom") else ("sombre" if sombre else "clair")
-    css = CSS_TELECOM if key == "telecom" else ""
-    if nom == "sombre":             # des cartes plus denses : le pylône reste derrière
-        css += "@define-color card_bg_color rgba(28, 28, 40, 0.78);\n"
+    nom = "sombre" if key in ("sombre", "telecom") or (key not in ("clair",) and sombre) else "clair"
+    css = CSS_TELECOM if nom == "sombre" else "@define-color card_bg_color rgba(255, 255, 255, 0.80);\n"
     for d in FONDS:
         f = os.path.join(d, nom + ".jpg")
         if os.path.exists(f):

@@ -135,7 +135,7 @@
                     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
                         <Button android:id="@+id/btn_theme0" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Clair" android:textAllCaps="false"/>
                         <Button android:id="@+id/btn_theme1" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Sombre" android:textAllCaps="false"/>
-                        <Button android:id="@+id/btn_theme2" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Système" android:textAllCaps="false"/><Button android:id="@+id/btn_theme3" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Télécom" android:textAllCaps="false"/>
+                        <Button android:id="@+id/btn_theme2" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Système" android:textAllCaps="false"/>
                     </LinearLayout>
                     <TextView android:id="@+id/account" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:paddingTop="14dp" android:textIsSelectable="true"/>
                     <Button android:id="@+id/btn_quick" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Démarrage rapide" android:textAllCaps="false"/>

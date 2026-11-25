@@ -11,8 +11,8 @@ android {
         applicationId "org.osmooperator.app"
         minSdk 29
         targetSdk 34
-        versionCode 18
-        versionName "0.10.1"
+        versionCode 19
+        versionName "0.10.2"
         // Les telephones seulement (ARM 64 et 32 bits) : avec x86 et x86_64, qui
         // ne servent qu aux emulateurs, l APK pesait 141 Mo - un telechargement
         // tronque sur le telephone donne « package non valide ».
