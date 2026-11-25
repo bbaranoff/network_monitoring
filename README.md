@@ -43,8 +43,13 @@ SIP, `TelephonyManager` pour la radio). L'APK est construite par
 Pas encore de page Trames sur Android.
 
 Pas encore validé : le SIP de l'appli pmOS (pjsua2) contre un vrai Asterisk,
-la compilation Android ; et le service `/inscription` n'existe pas encore côté
-nœud (« J'ai déjà un compte SIP » marche sans lui).
+la compilation Android.
+
+**Inscription** : côté nœud, `osmo-operator/tools/osmo-inscription.py`
+(service `osmo-inscription`, port 8088). Un code d'invitation se crée avec
+`python3 tools/osmo-inscription.py --nouveau-code` ; le téléphone reçoit un
+numéro 3000-3999 et son mot de passe SIP. « J'ai déjà un compte SIP » reste
+possible avec un compte existant.
 
 ## Fichiers
 
