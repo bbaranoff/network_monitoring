@@ -117,6 +117,8 @@ class MainActivity : Activity() {
     private lateinit var themeState: TextView
     private lateinit var btnAnswer: Button
     private lateinit var btnHangup: Button
+    private var appDialing = false
+    private val appCalls = HashSet<Call>()
     private lateinit var node: EditText
     private lateinit var spectrum: SpectrumView
     private lateinit var services: TextView
@@ -170,7 +172,12 @@ class MainActivity : Activity() {
         }
 
         override fun onCallStateChanged(core: Core, call: Call, state: Call.State?, message: String) {
-            if (Bench.nativeActive(this@MainActivity)) return     // the native Phone app has the call
+            // A call dialled FROM THIS APP stays in this app, proxy or not: it is
+            // not in the native Phone app, so its Hang up button must be here.
+            if (appDialing && state == Call.State.OutgoingInit) appCalls.add(call)
+            val own = appCalls.contains(call)
+            if (state == Call.State.Released) appCalls.remove(call)
+            if (Bench.nativeActive(this@MainActivity) && !own) return     // the native Phone app has the call
             val peer = call.remoteAddress.username ?: call.remoteAddress.asStringUriOnly()
             // An incoming call must be HEARD, app in the background included.
             if (state == Call.State.IncomingReceived) Bench.ring(this@MainActivity, peer) else Bench.stopRing()
@@ -923,7 +930,12 @@ class MainActivity : Activity() {
         }
         val params = core.createCallParams(null)
         params?.mediaEncryption = MediaEncryption.None
-        if (params == null) core.inviteAddress(to) else core.inviteAddressWithParams(to, params)
+        appDialing = true
+        try {
+            if (params == null) core.inviteAddress(to) else core.inviteAddressWithParams(to, params)
+        } finally {
+            appDialing = false
+        }
     }
 
     private fun sendSms() {

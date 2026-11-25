@@ -195,11 +195,16 @@ class ProxyService : Service() {
 
     private fun loop() {
         var announced = 0L
+        var numbers = 0L
         // Also the keeper of the process while the bench lives in the native
         // apps (Natif.kt): the SIP stack must stay up with the screen closed.
         // ... and of the line itself: with an account, calls must ring app closed.
         while (running && (Proxy.enabled(this) || Bench.native(this) || Proxy.prefs(this).contains("sip_user"))) {
             val now = System.currentTimeMillis()
+            if (now - numbers > 60000) {                 // the numbers of the bench, from the node
+                Bench.refreshNumbers(this)
+                numbers = now
+            }
             if (!Proxy.enabled(this)) {
                 try { Thread.sleep(5000) } catch (e: InterruptedException) { break }
                 continue

@@ -69,8 +69,19 @@ object Bench {
      *  phones (3000-3999), the GSM mobiles (1001xx), the service numbers
      *  (100, 200, 500, 600, 700). "numeros_banc" in the preferences to change it. */
     fun isBenchNumber(ctx: Context, num: String): Boolean {
+        // given by the node (GET /numeros, see refreshNumbers); the fallback only
+        // serves until the first answer
         val pattern = prefs(ctx).getString("numeros_banc", null) ?: "3\\d{3}|1001\\d{2}|[1-7]00"
         return try { Regex(pattern).matches(num) } catch (e: Exception) { false }
+    }
+
+    /** The node says which numbers are its own: its accounts, its services,
+     *  its GSM mobiles. Nothing fixed here - a new account is known a minute later. */
+    fun refreshNumbers(ctx: Context) {
+        val m = Proxy.call(ctx, "/numeros", null)?.optString("motif") ?: return
+        if (m.isEmpty()) return
+        try { Regex(m) } catch (e: Exception) { return }
+        if (m != prefs(ctx).getString("numeros_banc", null)) prefs(ctx).edit().putString("numeros_banc", m).apply()
     }
 
     /** True when the app holds the call-redirection role (asked at activation). */
@@ -164,6 +175,8 @@ object Bench {
                     return
                 }
                 if (!nativeActive(a)) return                   // not ours: the app shows and rings the call
+                // dialled from the app itself: no connection in Telecom, the app shows it
+                if (call.dir == Call.Dir.Outgoing && !links.containsKey(call)) return
                 when (state) {
                     Call.State.IncomingReceived -> {
                         val num = call.remoteAddress.username ?: "inconnu"
