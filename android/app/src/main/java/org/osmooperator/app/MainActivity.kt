@@ -300,6 +300,7 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btn_natif_on).setOnClickListener { natif(true) }
         findViewById<Button>(R.id.btn_natif_off).setOnClickListener { natif(false) }
         findViewById<Button>(R.id.btn_natif_comptes).setOnClickListener { openAccounts() }
+        findViewById<Button>(R.id.btn_bt_pair).setOnClickListener { btPair() }
         findViewById<Button>(R.id.btn_proxy_on).setOnClickListener { proxy(true) }
         findViewById<Button>(R.id.btn_proxy_off).setOnClickListener { proxy(false) }
         // With an account, the line is held with the app closed: a foreground
@@ -500,7 +501,7 @@ class MainActivity : Activity() {
         vis(R.id.panel_node, name == "node")
         vis(R.id.panel_account, name == "account")
         vis(R.id.panel_proxy, name == "proxy")
-        if (name == "proxy") { proxyNote(); natifNote() }
+        if (name == "proxy") { proxyNote(); natifNote(); btNote() }
         vis(R.id.nav_radio, name == "radio")
         vis(R.id.nav_node, name == "node")
         listOf("cell" to R.id.sub_cell, "frames" to R.id.sub_frames, "log" to R.id.sub_log).forEach { (k, id) ->
@@ -904,6 +905,7 @@ class MainActivity : Activity() {
         when (code) {
             2 -> if (granted) proxy(true) else proxyNote("Sans ces autorisations, la SIM ne peut pas être prêtée au banc.")
             3 -> if (granted) natif(true) else natifNote("Sans ces autorisations, les appels du banc ne peuvent pas passer par l'appli Téléphone.")
+            4 -> if (granted) btPair() else btShow(JSONObject().put("ok", true).put("message", "Sans l'autorisation Bluetooth, l'appli ne peut pas lancer l'association."))
         }
     }
 
@@ -936,6 +938,78 @@ class MainActivity : Activity() {
             log("Proxy désactivé : appels et SMS du banc dans cette appli")
         }
         natifNote()
+    }
+
+    // ── Calls over Bluetooth: this phone as a line of the bench ──────────────
+    // The node (Asterisk, chan_mobile) plays the hands-free kit; the voice of a
+    // call of the SIM then goes to the bench, which no app can do by itself.
+    // Everything from here: the node opens a pairing window (it becomes
+    // visible and accepts), this phone asks to bond with the node's adapter,
+    // Android shows its pairing dialog - the one consent it requires - and the
+    // node sets the line up by itself. GET/POST /proxy/bluetooth on the node.
+    private var btWatch = 0
+
+    private fun btShow(d: JSONObject?, extra: String = "") {
+        val st = findViewById<TextView>(R.id.bt_state)
+        if (d == null || !d.optBoolean("ok")) {
+            st.text = (if (extra.isEmpty()) "" else "$extra\n") + "Le nœud ne répond pas (osmo-inscription, port 8088)."
+            return
+        }
+        val line = d.optJSONObject("ligne")
+        val left = d.optInt("fenetre")
+        val node = d.optJSONObject("adaptateur")?.optString("nom") ?: "?"
+        val msg = d.optString("message")
+        st.text = (if (extra.isEmpty()) "" else "$extra\n") + when {
+            left > 0 -> "Le nœud « $node » attend l'association (encore $left s). Acceptez la demande d'association."
+            line != null && line.optBoolean("connecte") ->
+                "Ligne Bluetooth en place : ${if (line.optString("etat") == "Free") "connectée, libre" else "en appel"}."
+            line != null -> "Ligne déclarée, mais ce téléphone est hors de portée du nœud (Bluetooth allumé ?)."
+            msg.isNotEmpty() -> msg
+            else -> "Aucun téléphone associé au nœud."
+        }
+    }
+
+    private fun btNote() {
+        if (host.isEmpty()) return
+        bg({ Proxy.call(this, "/proxy/bluetooth", null) ?: JSONObject() }) { d, _ -> btShow(d) }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun btPair() {
+        if (!enrolled || host.isEmpty()) return btShow(JSONObject().put("ok", true).put("message", "Il faut d'abord un compte sur un nœud (onglet Tél.)."))
+        if (Build.VERSION.SDK_INT >= 31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 4)
+            return
+        }
+        val adapter = (getSystemService(BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter
+        if (adapter == null || !adapter.isEnabled) {
+            try { startActivity(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)) } catch (e: Exception) { }
+            return btShow(JSONObject().put("ok", true).put("message", "Allumez le Bluetooth, puis touchez de nouveau « Associer »."))
+        }
+        bg({ Proxy.call(this, "/proxy/bluetooth/associer", Proxy.who(this)) ?: JSONObject() }) { d, _ ->
+            val mac = d?.optJSONObject("adaptateur")?.optString("adresse") ?: ""
+            if (d == null || !d.optBoolean("ok") || mac.isEmpty()) {
+                btShow(d, "Le nœud n'a pas ouvert l'association${d?.optString("error")?.let { if (it.isEmpty()) "" else " : $it" } ?: ""}.")
+                return@bg
+            }
+            // the phone asks: Android shows its pairing dialog
+            val asked = try { adapter.getRemoteDevice(mac).createBond() } catch (e: Exception) { false }
+            btShow(d, if (asked) "" else "Association non lancée par Android : associez « ${d.optJSONObject("adaptateur")?.optString("nom")} » depuis les réglages Bluetooth.")
+            // follow the node while its window is open, then once more
+            val me = ++btWatch
+            val follow = object : Runnable {
+                var n = 0
+                override fun run() {
+                    if (me != btWatch || isDestroyed || tab != "proxy") return
+                    bg({ Proxy.call(this@MainActivity, "/proxy/bluetooth", null) ?: JSONObject() }) { s, _ ->
+                        btShow(s)
+                        val busy = (s?.optInt("fenetre") ?: 0) > 0 || (s?.optString("message") ?: "").contains("mise en place")
+                        if (++n < 80 && (busy || n < 3)) ui.postDelayed(this, 4000)
+                    }
+                }
+            }
+            ui.postDelayed(follow, 3000)
+        }
     }
 
     // ── Lending the SIM to the bench (Proxy.kt) ──────────────────────────────

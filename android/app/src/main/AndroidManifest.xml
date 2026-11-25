@@ -12,6 +12,11 @@
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
     <!-- The proxy (tab "Proxy"): this phone lends its SIM to the bench. SMS in
          both directions, and who is calling when the SIM rings. -->
+    <!-- Pairing this phone with the node (tab Proxy): the node then uses it as a
+         line for calls, over the Bluetooth hands-free profile. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />

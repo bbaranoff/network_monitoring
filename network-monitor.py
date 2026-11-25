@@ -79,7 +79,7 @@ LOC_3GPP_LAC_CI = 1 << 0       # MM_MODEM_LOCATION_SOURCE_3GPP_LAC_CI (1 << 1 se
 ACT_5GNR = 1 << 15             # MM_MODEM_ACCESS_TECHNOLOGY_5GNR
 
 APP_ID = "org.osmocom.NetworkMonitor"
-VERSION = "0.6"
+VERSION = "0.9"
 HISTORY_S = 600          # 10 min d historique par mesure
 POLL_S = 2               # cadence de lecture
 FRAMES_MAX = 2000        # trames gardees a l ecran
@@ -1213,6 +1213,14 @@ class NodeClient:
     def trunk(self, choice=None):
         """La sortie vers le réseau public : lue (None) ou choisie."""
         return self._api("/api/trunk", None if choice is None else {"trunk": choice})
+
+    def bluetooth(self, acc=None):
+        """La ligne Bluetooth du nœud (un smartphone en mains-libres) : son état,
+        ou - avec un compte - l ouverture d une fenêtre d appairage de 3 min."""
+        if acc is None:
+            return http_json("http://%s:%d/proxy/bluetooth" % (self.host, PORT_JOIN), timeout=8)
+        return http_json("http://%s:%d/proxy/bluetooth/associer" % (self.host, PORT_JOIN),
+                         {"user": acc["sip_user"], "mdp": acc["sip_password"]}, timeout=10)
 
     def enrol(self, pseudo, code):
         j = http_json("http://%s:%d/inscription" % (self.host, PORT_JOIN),
@@ -2370,7 +2378,16 @@ class NodeUi:
         self.a_natif_quiet = False
         self.a_natif.connect("notify::active", lambda r, _p: self.set_natif(r.get_active()))
         grp.add(self.a_natif)
+        # La ligne Bluetooth : un smartphone appairé au nœud prête sa SIM pour les
+        # APPELS (mains-libres). Tout se fait d ici : le nœud devient visible,
+        # on l associe depuis le téléphone, la ligne se met en place seule.
+        self.a_bt = Adw.ActionRow(title="Téléphone Bluetooth", subtitle="—", subtitle_lines=3)
+        self.a_bt_go = Gtk.Button(label="Associer", valign=Gtk.Align.CENTER)
+        self.a_bt_go.connect("clicked", self.on_bt_pair)
+        self.a_bt.add_suffix(self.a_bt_go)
+        grp.add(self.a_bt)
         box.append(grp)
+        GLib.timeout_add_seconds(6, self._bt_poll)
         box.append(Gtk.Label(label="Network Monitor " + VERSION, css_classes=["dim-label", "caption"]))
         return self._scroll(box)
 
@@ -2394,6 +2411,41 @@ class NodeUi:
             self.toast("Sortie : %s" % TRUNKS[d["trunk"]] if d and d.get("trunk") == choice
                        else "Sortie inchangée : %s" % (err or (d or {}).get("err") or "refus du nœud"))
         self._in_thread(lambda: node.trunk(choice), done)
+
+    # ── la ligne Bluetooth du nœud ──
+    def _bt_shown(self, d, err):
+        if err or not d or not d.get("ok"):
+            self.a_bt.set_subtitle("le nœud ne répond pas")
+            return
+        ligne, reste = d.get("ligne"), d.get("fenetre") or 0
+        if reste:
+            txt = "Le nœud « %s » est visible encore %d s : associez-le depuis le Bluetooth du téléphone" % (
+                (d.get("adaptateur") or {}).get("nom") or "?", reste)
+        elif ligne:
+            nom = next((x["nom"] for x in d.get("appaires") or [] if x["adresse"] == ligne["adresse"]), ligne["adresse"])
+            txt = "%s · %s" % (nom, {"Free": "connecté, ligne libre", "Busy": "en appel"}.get(ligne["etat"], ligne["etat"])
+                               if ligne["connecte"] else "hors de portée")
+        else:
+            txt = d.get("message") or "aucun téléphone associé"
+        if d.get("message") and not reste and not ligne:
+            txt = d["message"]
+        self.a_bt.set_subtitle(txt)
+        self.a_bt_go.set_sensitive(not reste and self.account is not None)
+
+    def _bt_poll(self):
+        # seulement quand on regarde la page Compte
+        if self.node is not None and not self.demo and self.tabs.get_visible_child_name() == "account":
+            self._in_thread(self.node.bluetooth, self._bt_shown)
+        return True
+
+    def on_bt_pair(self, _btn):
+        if self.node is None or not self.account:
+            return self.toast("Il faut d'abord un compte sur un nœud")
+        if self.demo:
+            return self.a_bt.set_subtitle("mode démonstration : pas de Bluetooth")
+        self.a_bt_go.set_sensitive(False)
+        acc = self.account
+        self._in_thread(lambda: self.node.bluetooth(acc), self._bt_shown)
 
     def set_natif(self, on):
         """Le proxy : le compte du banc passe dans l appli Appels (ou en revient)."""
