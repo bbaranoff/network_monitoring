@@ -51,6 +51,15 @@ la compilation Android.
 numéro 3000-3999 et son mot de passe SIP. « J'ai déjà un compte SIP » reste
 possible avec un compte existant.
 
+**Sur le nœud, tout se fait dans osmo-gtk, onglet « Téléphones »** : invitation par QR code, comptes,
+proxy, ligne Bluetooth.
+
+**Page « Banc »** (onglet Nœud, 0.11) : une bonne partie de ce que montre osmo-gtk, lue sur le réseau
+avec le compte du téléphone - la chaîne (DSP, QEMU, osmocon, mobile, pont), le service du banc et ses
+deux boutons Démarrer / Arrêter, les démons du cœur, les abonnés du HLR, un journal au choix. Elle
+passe par `osmo-inscription` (`/banc/etat`, `/banc/journal`, `/banc/vty`, `/banc/action`), par le
+réseau (Wi-Fi, WireGuard, USB).
+
 **Invitation par QR code** : `python3 tools/osmo-inscription.py --nouveau-qrcode PSEUDO`
 affiche un QR code (terminal et PNG) qui porte l'adresse du nœud, le pseudo et
 une invitation de 16 caractères. Dans l'appli : « Scanner le QR code » (caméra),
@@ -74,10 +83,16 @@ L'appli est un paquet Alpine : `dist/network-monitor-<version>-r0.apk` (noarch,
 il va sur la VM comme sur un téléphone ARM). Directement sur le pmOS :
 
 ```sh
-sudo apk add --allow-untrusted network-monitor-0.2-r0.apk
-# ou, pour que apk vérifie la signature :
-sudo cp pmos-6aaa92e8.rsa.pub /etc/apk/keys/ && sudo apk add network-monitor-0.2-r0.apk
+sudo apk add --allow-untrusted network-monitor-<version>-r0.apk
+# ou, pour que apk vérifie la signature (la clé est publiée à côté du paquet) :
+sudo cp pmos-*.rsa.pub /etc/apk/keys/ && sudo apk add network-monitor-<version>-r0.apk
 ```
+
+Les paquets sont publiés en **release** du dépôt : `network-monitor-<version>-r0-postmarketos.apk`
+(Alpine / postmarketOS), `network-monitor-<version>-android.apk` (Android) et la clé `pmos-*.rsa.pub`.
+Sur le banc osmo-operator rien n'est à faire : l'ISO embarque le paquet de la dernière release, et la
+VM postmarketOS le reçoit à son premier démarrage (`osmo-pmos-setup` prend la dernière release publiée,
+sinon celui du banc).
 
 `apk` tire les dépendances (`python3 py3-gobject3 py3-cairo gtk4.0 libadwaita
 libsoup3 libmm-glib modemmanager`, déjà là sur une image Phosh) et pose

@@ -79,7 +79,7 @@ LOC_3GPP_LAC_CI = 1 << 0       # MM_MODEM_LOCATION_SOURCE_3GPP_LAC_CI (1 << 1 se
 ACT_5GNR = 1 << 15             # MM_MODEM_ACCESS_TECHNOLOGY_5GNR
 
 APP_ID = "org.osmocom.NetworkMonitor"
-VERSION = "0.10.5"
+VERSION = "0.11.0"
 HISTORY_S = 600          # 10 min d historique par mesure
 POLL_S = 2               # cadence de lecture
 FRAMES_MAX = 2000        # trames gardees a l ecran
@@ -1184,6 +1184,17 @@ class NodeClient:
         self.host = host
         self.api_host = None
 
+    def banc(self, acc, chemin, data=None, timeout=8):
+        """LE BANC lui-même (osmo-inscription, port 8088), en tant que téléphone
+        associé : la chaîne, le cœur, les abonnés, un journal, démarrer/arrêter.
+        Par le réseau (Wi-Fi, WireGuard, USB...), avec le compte SIP du téléphone."""
+        ident = {"user": acc["sip_user"], "mdp": acc["sip_password"]}
+        if data is None:
+            chemin += ("&" if "?" in chemin else "?") + urllib.parse.urlencode(ident)
+        else:
+            data = dict(data, **ident)
+        return http_json("http://%s:%d%s" % (self.host, PORT_JOIN, chemin), data, timeout=timeout)
+
     def psd(self, src):
         return http_json("http://%s:%d/psd?src=%s" % (self.host, PORT_FFT, src), timeout=3)
 
@@ -2285,6 +2296,7 @@ class NodeUi:
         self.n_console_widgets += [self.n_vty_sel, self.n_cmd, go]
         self._console_ready(False)                  # jusqu à la première réponse du nœud
         self.node_swiper.add("console", "Console VTY", v)
+        self.node_swiper.add("banc", "Banc", self._page_banc())
         self.node_busy = False
         self.node_etat_at = 0
         GLib.timeout_add(250, self._node_poll)
@@ -2305,6 +2317,10 @@ class NodeUi:
                 self.node_busy = False
                 self.spec[page].push(d if d else {"error": "nœud injoignable (%s)" % err})
             self._in_thread(lambda: node.psd(page), done)
+        elif page == "banc":
+            if time.time() - self.banc_at > 4:
+                self.banc_at = time.time()
+                self._banc_poll()
         elif time.time() - self.node_etat_at > 5:
             self.node_busy = True
             self.node_etat_at = time.time()
@@ -2314,6 +2330,127 @@ class NodeUi:
                 self._render_etat(d, err)
             self._in_thread(node.etat, done)
         return True
+
+    # ── le banc lui-même : ce que montre osmo-gtk sur le nœud, dans la poche ──
+    def _page_banc(self):
+        """La chaîne (dsp, qemu, osmocon, mobile, pont), le service du banc et ses
+        deux boutons, les démons du cœur, les abonnés du HLR, un journal. Tout passe
+        par osmo-inscription (port 8088) avec le compte du téléphone : il faut être
+        associé. La ligne Bluetooth, elle, reste celle des appels (page Compte)."""
+        v = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.b_banc = Adw.PreferencesGroup(title="Le banc", description="en attente du nœud…")
+        self.b_service = Adw.ActionRow(title="Service du banc", subtitle="?")
+        self.b_go = Gtk.Button(label="Démarrer", valign=Gtk.Align.CENTER, css_classes=["suggested-action"])
+        self.b_stop = Gtk.Button(label="Arrêter", valign=Gtk.Align.CENTER, css_classes=["destructive-action"])
+        self.b_go.connect("clicked", lambda *_: self._banc_action("demarrer"))
+        self.b_stop.connect("clicked", lambda *_: self._banc_action("arreter"))
+        self.b_service.add_suffix(self.b_go)
+        self.b_service.add_suffix(self.b_stop)
+        self.b_banc.add(self.b_service)
+        self.b_chaine = {}
+        for nom, titre in (("dsp", "DSP C54x (ROM TI)"), ("qemu", "ARM Calypso (QEMU)"), ("osmocon", "osmocon (L1CTL)"),
+                           ("mobile", "mobile (couche 2/3)"), ("pont", "pont radio (BTS ↔ DSP)")):
+            row = Adw.ActionRow(title=titre, subtitle=nom)
+            point = Gtk.Box(css_classes=["dot"], valign=Gtk.Align.CENTER)
+            row.add_prefix(point)
+            self.b_banc.add(row)
+            self.b_chaine[nom] = point
+        v.append(self.b_banc)
+        self.b_coeur = Adw.PreferencesGroup(title="Cœur de réseau")
+        self.b_coeur_rows = []
+        v.append(self.b_coeur)
+        self.b_abonnes = Adw.PreferencesGroup(title="Abonnés du HLR")
+        self.b_abonnes_rows = []
+        v.append(self.b_abonnes)
+        j = Adw.PreferencesGroup(title="Journal")
+        self.b_journaux = ["mobile", "pont", "dsp", "qemu", "osmocon", "BTS", "BSC", "MSC", "HLR"]
+        self.b_journal_sel = Gtk.DropDown.new_from_strings(self.b_journaux)
+        self.b_journal_sel.connect("notify::selected", lambda *_: self._banc_journal())
+        j.add(self.b_journal_sel)
+        self.b_journal = Gtk.TextView(editable=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR,
+                                      top_margin=8, left_margin=8, right_margin=8, bottom_margin=8,
+                                      css_classes=["console"])
+        j.add(Gtk.ScrolledWindow(min_content_height=220, child=self.b_journal, css_classes=["card"]))
+        v.append(j)
+        self.banc_at = 0
+        self.banc_busy = False
+        return self._scroll(v)
+
+    def _banc_compte(self):
+        if self.account is None:
+            self.b_banc.set_description("Associez d abord ce téléphone au nœud (Compte : invitation ou QR code).")
+            return None
+        return self.account
+
+    def _banc_poll(self):
+        acc, node = self._banc_compte(), self.node
+        if acc is None or node is None or self.banc_busy or not hasattr(node, "banc"):
+            return
+        self.banc_busy = True
+
+        def done(d, err):
+            self.banc_busy = False
+            self._banc_shown(d, err)
+        self._in_thread(lambda: node.banc(acc, "/banc/etat"), done)
+        self._banc_journal()
+
+    def _banc_shown(self, d, err):
+        if err or not d or not d.get("ok"):
+            self.b_banc.set_description(GLib.markup_escape_text(
+                "Le nœud ne répond pas (osmo-inscription, port %d) : %s" % (PORT_JOIN, (d or {}).get("error") or err or "?")))
+            return
+        self.b_banc.set_description("%s · %s" % (d.get("noeud", "?"), self.node.host))
+        actif = d.get("banc") == "active"
+        self.b_service.set_subtitle({"active": "en marche", "inactive": "arrêté", "activating": "démarre…",
+                                     "deactivating": "s arrête…", "failed": "en échec"}.get(d.get("banc"), d.get("banc") or "?"))
+        self.b_go.set_sensitive(not actif)
+        self.b_stop.set_sensitive(actif or d.get("banc") in ("activating", "failed"))
+        for nom, point in self.b_chaine.items():
+            (point.add_css_class if (d.get("chaine") or {}).get(nom) else point.remove_css_class)("on")
+        for r in self.b_coeur_rows:
+            self.b_coeur.remove(r)
+        self.b_coeur_rows = []
+        for c in d.get("coeur") or []:
+            row = Adw.ActionRow(title=c["nom"], subtitle=c["processus"] + (" · VTY %d" % c["port"] if c.get("port") else ""))
+            row.add_prefix(Gtk.Box(css_classes=["dot"] + (["on"] if c.get("actif") else []), valign=Gtk.Align.CENTER))
+            self.b_coeur.add(row)
+            self.b_coeur_rows.append(row)
+        for r in self.b_abonnes_rows:
+            self.b_abonnes.remove(r)
+        self.b_abonnes_rows = []
+        ab = d.get("abonnes") or []
+        self.b_abonnes.set_description("%d abonné(s)" % len(ab))
+        for a in ab[:40]:
+            row = Adw.ActionRow(title=a.get("msisdn") or "(sans numéro)", subtitle="IMSI %s" % a.get("imsi", "?"))
+            self.b_abonnes.add(row)
+            self.b_abonnes_rows.append(row)
+
+    def _banc_journal(self):
+        acc, node = self.account, self.node
+        if acc is None or node is None or not hasattr(node, "banc"):
+            return
+        demon = self.b_journaux[min(self.b_journal_sel.get_selected(), len(self.b_journaux) - 1)]
+
+        def done(d, err):
+            if d and d.get("ok"):
+                buf = self.b_journal.get_buffer()
+                txt = "\n".join(d.get("lignes") or []) or "(journal vide)"
+                if txt != buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False):
+                    buf.set_text(txt)
+                    self.b_journal.scroll_to_iter(buf.get_end_iter(), 0, False, 0, 0)
+        self._in_thread(lambda: node.banc(acc, "/banc/journal?demon=%s&n=120" % demon), done)
+
+    def _banc_action(self, action):
+        acc, node = self._banc_compte(), self.node
+        if acc is None or node is None or not hasattr(node, "banc"):
+            return
+        self.b_service.set_subtitle("…")
+
+        def done(d, err):
+            if err or not d or not d.get("ok"):
+                self.b_service.set_subtitle("refusé : %s" % ((d or {}).get("error") or err or "?"))
+            self.banc_at = 0
+        self._in_thread(lambda: node.banc(acc, "/banc/action", {"action": action}), done)
 
     def _render_etat(self, d, err):
         for r in self.n_proc_rows:
