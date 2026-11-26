@@ -86,6 +86,17 @@
                         </LinearLayout>
                         <TextView android:id="@+id/vty_out" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textIsSelectable="true" android:typeface="monospace"/>
                     </LinearLayout>
+                    <LinearLayout android:id="@+id/panel_banc" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
+                        <TextView android:id="@+id/banc_state" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Le banc : —" android:textStyle="bold" android:paddingTop="6dp"/>
+                        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                            <Button android:id="@+id/btn_banc_start" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Démarrer" android:textAllCaps="false"/>
+                            <Button android:id="@+id/btn_banc_stop" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Arrêter" android:textAllCaps="false"/>
+                        </LinearLayout>
+                        <TextView android:id="@+id/banc_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:paddingTop="6dp" android:textIsSelectable="true" android:typeface="monospace"/>
+                        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Journal" android:textStyle="bold" android:paddingTop="12dp"/>
+                        <Spinner android:id="@+id/banc_log_sel" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                        <TextView android:id="@+id/banc_log" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="" android:textIsSelectable="true" android:typeface="monospace" android:textSize="11sp"/>
+                    </LinearLayout>
                 </LinearLayout>
                 <LinearLayout android:id="@+id/panel_proxy" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone">
                     <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:textStyle="bold" android:textSize="18sp" android:text="Proxy : le banc dans les applis du téléphone"/>
@@ -121,7 +132,7 @@
                     <LinearLayout android:id="@+id/panel_trunk" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingTop="14dp">
                         <TextView android:id="@+id/trunk_state" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Sortie vers l'extérieur : —" android:textStyle="bold"/>
                         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
-                            <Button android:id="@+id/btn_zadarma" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Zadarma" android:textAllCaps="false"/>
+                            <Button android:id="@+id/btn_sip" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Trunk SIP" android:textAllCaps="false"/>
                             <Button android:id="@+id/btn_dongle" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Dongle" android:textAllCaps="false"/>
                         </LinearLayout>
                     </LinearLayout>

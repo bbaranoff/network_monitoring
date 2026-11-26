@@ -79,7 +79,7 @@ LOC_3GPP_LAC_CI = 1 << 0       # MM_MODEM_LOCATION_SOURCE_3GPP_LAC_CI (1 << 1 se
 ACT_5GNR = 1 << 15             # MM_MODEM_ACCESS_TECHNOLOGY_5GNR
 
 APP_ID = "org.osmocom.NetworkMonitor"
-VERSION = "0.11.0"
+VERSION = "0.11.1"
 HISTORY_S = 600          # 10 min d historique par mesure
 POLL_S = 2               # cadence de lecture
 FRAMES_MAX = 2000        # trames gardees a l ecran
@@ -1223,7 +1223,15 @@ class NodeClient:
 
     def trunk(self, choice=None):
         """La sortie vers le réseau public : lue (None) ou choisie."""
-        return self._api("/api/trunk", None if choice is None else {"trunk": choice})
+        d = self._api("/api/trunk", None if choice is None else {"trunk": choice})
+        if choice is not None and isinstance(d, dict) and "trunk" not in d:
+            # refusé : un nœud d avant le renommage ne connaît que l ancien nom
+            for vieux, nouveau in TRUNK_ANCIEN.items():
+                if nouveau == choice:
+                    d = self._api("/api/trunk", {"trunk": vieux})
+        if isinstance(d, dict) and d.get("trunk") in TRUNK_ANCIEN:
+            d["trunk"] = TRUNK_ANCIEN[d["trunk"]]
+        return d
 
     def bluetooth(self, acc=None):
         """La ligne Bluetooth du nœud (un smartphone en mains-libres) : son état,
@@ -1820,7 +1828,11 @@ class Swiper(Gtk.Box):
 
 
 # La sortie vers le réseau public (TRUNK_EXT du plan de numérotation Asterisk du nœud).
-TRUNKS = {"zadarma": "Zadarma", "dongle": "Dongle"}
+# Les sorties du nœud vers le réseau public : son trunk SIP (écrit dans osmo-gtk,
+# onglet « Trunk SIP ») ou le dongle. Un nœud d avant le renommage appelle encore
+# le trunk SIP du nom d un opérateur : TRUNK_ANCIEN, lu et écrit pour lui.
+TRUNKS = {"sip": "Trunk SIP", "dongle": "Dongle"}
+TRUNK_ANCIEN = {"zadarma": "sip"}
 # Trois niveaux : ce que l on montre, pas ce que l on sait faire.
 #   Basique : Téléphone, Messages, Compte.
 #   Medium  : + Radio (cellule, signal, voisines) et Nœud (spectres, services).
@@ -2519,7 +2531,7 @@ class NodeUi:
         self.a_node = Adw.EntryRow(title="Adresse du nœud", show_apply_button=True)
         self.a_node.connect("apply", lambda r: self.set_node(node_host(r.get_text()), announce=True))
         grp.add(self.a_node)
-        self.a_trunk = Adw.ComboRow(title="Sortie", subtitle="appels vers l'extérieur",          # titre court : « Zadarma » était tronqué
+        self.a_trunk = Adw.ComboRow(title="Sortie", subtitle="appels vers l'extérieur",          # titre court : le nom de la sortie était tronqué
                                     model=Gtk.StringList.new(list(TRUNKS.values())), sensitive=False)
         self.a_trunk_quiet = True
         self.a_trunk.connect("notify::selected", self.on_trunk)

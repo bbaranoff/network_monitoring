@@ -23,7 +23,7 @@ WireGuard ou VPS), saisie une fois dans Compte :
 |---|---|
 | `http://<nœud>:8081/psd` (fft-web) | Nœud : spectres BTS et MS, cascade en palette turbo |
 | `http://<nœud>:8090/api/etat`, `/api/console` (osmo-reglages) | Nœud : services, console VTY |
-| `http://<nœud>:8090/api/trunk` (osmo-reglages) | Compte : sortie vers l'extérieur, Zadarma ou dongle |
+| `http://<nœud>:8090/api/trunk` (osmo-reglages) | Compte : sortie vers l'extérieur, trunk SIP ou dongle |
 | `ws://<nœud>:8080/` (tableau de bord) | Radio : trames |
 | `http://<nœud>:8088/inscription` | Téléphone : code d'invitation → compte SIP |
 | `sip:<nœud>:5060` (Asterisk) | Téléphone, Messages : appels et SMS (SIP MESSAGE), pjsua2 |

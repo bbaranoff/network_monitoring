@@ -7,7 +7,8 @@
 //   http://<node>:8081/psd?src=bts|ms   I/Q spectrum of the bench (fft-web)
 //   http://<node>:8090/api/etat         processes and VTYs (osmo-reglages)
 //   http://<node>:8090/api/console      one VTY command
-//   http://<node>:8090/api/trunk        outbound trunk: zadarma | dongle
+//   http://<node>:8090/api/trunk        outbound trunk: sip | dongle
+//   http://<node>:8088/banc/...         the bench itself, with the account (pane "Banc")
 //   http://<node>:8088/inscription      invitation code -> SIP account
 //   sip:<node>:5060                     calls and SMS (SIP MESSAGE), Linphone SDK
 // None of it is authenticated on the node side: LAN or WireGuard only.
@@ -152,9 +153,12 @@ class MainActivity : Activity() {
     private val host get() = prefs.getString("node", "") ?: ""
     private val mode get() = prefs.getInt("mode", 1)
     private val enrolled get() = prefs.contains("sip_user")
-    private val nodePages get() = if (mode == 2) listOf("bts", "ms", "services", "console") else listOf("bts", "ms", "services")
+    private val nodePages get() = if (mode == 2) listOf("bts", "ms", "services", "console", "banc") else listOf("bts", "ms", "services", "banc")
     private val NODE_TITLES = mapOf("bts" to "Spectre BTS (descendant)", "ms" to "Spectre MS (montant)",
-        "services" to "Services", "console" to "Console VTY")
+        "services" to "Services", "console" to "Console VTY", "banc" to "Banc")
+    // the logs the pane "Banc" can show: the chain, then the core daemons
+    private val BANC_LOGS = listOf("mobile", "pont", "dsp", "qemu", "osmocon", "BTS", "BSC", "MSC", "HLR")
+    private var bancAt = 0L
 
     // ── SIP events ───────────────────────────────────────────────────────────
     private val listener = object : CoreListenerStub() {
@@ -374,7 +378,11 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btn_leave).setOnClickListener { leave() }
         findViewById<Button>(R.id.btn_node).setOnClickListener { setNode(node.text.toString()) }
         findViewById<Button>(R.id.btn_vty).setOnClickListener { runVty() }
-        findViewById<Button>(R.id.btn_zadarma).setOnClickListener { trunk("zadarma") }
+        findViewById<Button>(R.id.btn_sip).setOnClickListener { trunk("sip") }
+        findViewById<Button>(R.id.btn_banc_start).setOnClickListener { bancAction("demarrer") }
+        findViewById<Button>(R.id.btn_banc_stop).setOnClickListener { bancAction("arreter") }
+        findViewById<Spinner>(R.id.banc_log_sel).adapter =
+            ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, BANC_LOGS)
         findViewById<Button>(R.id.btn_dongle).setOnClickListener { trunk("dongle") }
         listOf(R.id.btn_mode0, R.id.btn_mode1, R.id.btn_mode2).forEachIndexed { i, id ->
             findViewById<Button>(id).setOnClickListener { prefs.edit().putInt("mode", i).apply(); applyMode() }
@@ -574,6 +582,8 @@ class MainActivity : Activity() {
         vis(R.id.spectrum, p == "bts" || p == "ms")
         vis(R.id.services, p == "services")
         vis(R.id.panel_console, p == "console")
+        vis(R.id.panel_banc, p == "banc")
+        bancAt = 0
         nodeTitle.text = "${NODE_TITLES[p]}\n${pages.indices.joinToString(" ") { if (it == nodePage) "●" else "○" }}"
         if (host.isEmpty()) spectrum.fail("pas de nœud : son adresse dans Compte")
         etatAt = 0
@@ -643,6 +653,10 @@ class MainActivity : Activity() {
                 }
             }
         }
+        if (page == "banc" && now - bancAt > 4000) {
+            bancAt = now
+            banc()
+        }
         if ((page == "services" || page == "console") && now - etatAt > 5000) {
             etatAt = now
             bg({ http("http://$h:8090/api/etat") }) { d, err -> showEtat(d, err) }
@@ -705,17 +719,98 @@ class MainActivity : Activity() {
         }
     }
 
-    /** The outbound trunk of the node: read (null) or chosen. */
+    /** The outbound trunk of the node: read (null) or chosen - "sip" (the SIP
+     *  trunk, written in osmo-gtk's tab "Trunk SIP") or "dongle". A node from
+     *  before the rename still calls the SIP trunk by an operator's name: asked
+     *  again with that name when it refuses, and read back as "sip". */
     private fun trunk(choice: String?) {
         if (host.isEmpty()) {
             trunkState.text = "Sortie vers l'extérieur : pas de nœud"
             return
         }
         val h = host
-        val body = if (choice == null) null else JSONObject().put("trunk", choice)
-        bg({ http("http://$h:8090/api/trunk", body) }) { d, err ->
-            val t = d?.optString("trunk")?.takeIf { it.isNotEmpty() }
-            trunkState.text = "Sortie vers l'extérieur : ${t ?: "indisponible, le service de réglages du nœud ne répond pas"}"
+        val old = "zadarma"
+        bg({
+            var d = http("http://$h:8090/api/trunk", if (choice == null) null else JSONObject().put("trunk", choice))
+            if (choice == "sip" && d.optString("trunk").isEmpty())
+                d = http("http://$h:8090/api/trunk", JSONObject().put("trunk", old))
+            d
+        }) { d, _ ->
+            val t = d?.optString("trunk")?.takeIf { it.isNotEmpty() }?.let { if (it == old) "sip" else it }
+            trunkState.text = "Sortie vers l'extérieur : ${when (t) { "sip" -> "trunk SIP"; null -> "indisponible, le service de réglages du nœud ne répond pas"; else -> t }}"
+        }
+    }
+
+    // ── The bench itself (pane "Banc") ───────────────────────────────────────
+    // A good part of what osmo-gtk shows on the node, read over the network with
+    // this phone's account: the chain (DSP, QEMU, osmocon, mobile, bridge), the
+    // bench service and its two buttons, the core daemons, the HLR subscribers,
+    // the end of a log. Node side: osmo-inscription, GET /banc/etat,
+    // GET /banc/journal, POST /banc/action (port 8088) - the phone must be
+    // associated (user + mdp = its SIP account, as for the proxy).
+    private fun banc() {
+        val st = findViewById<TextView>(R.id.banc_state)
+        if (!enrolled || host.isEmpty()) {
+            st.text = "Associez d'abord ce téléphone au nœud (onglet Tél. : invitation ou QR code)."
+            findViewById<TextView>(R.id.banc_text).text = ""
+            return
+        }
+        val h = host
+        val q = Proxy.query(this)
+        bg({ http("http://$h:8088/banc/etat?$q", null, 8000) }) { d, err -> showBanc(d, err) }
+        val demon = BANC_LOGS[findViewById<Spinner>(R.id.banc_log_sel).selectedItemPosition.coerceIn(0, BANC_LOGS.size - 1)]
+        bg({ http("http://$h:8088/banc/journal?$q&demon=$demon&n=80", null, 8000) }) { d, _ ->
+            val l = d?.optJSONArray("lignes")
+            if (d != null && d.optBoolean("ok") && l != null) {
+                val txt = (0 until l.length()).joinToString("\n") { l.optString(it) }.ifEmpty { "(journal vide)" }
+                val v = findViewById<TextView>(R.id.banc_log)
+                if (v.text.toString() != txt) v.text = txt
+            }
+        }
+    }
+
+    private fun showBanc(d: JSONObject?, err: String?) {
+        val st = findViewById<TextView>(R.id.banc_state)
+        if (d == null || !d.optBoolean("ok")) {
+            st.text = "Le nœud ne répond pas (osmo-inscription, port 8088) : ${why(d, err)}"
+            return
+        }
+        val etat = d.optString("banc")
+        st.text = "Le banc (${d.optString("noeud")}) : " + when (etat) {
+            "active" -> "en marche"; "inactive" -> "arrêté"; "activating" -> "démarre…"
+            "deactivating" -> "s'arrête…"; "failed" -> "en échec"; else -> etat.ifEmpty { "?" }
+        }
+        findViewById<View>(R.id.btn_banc_start).isEnabled = etat != "active"
+        findViewById<View>(R.id.btn_banc_stop).isEnabled = etat == "active" || etat == "activating" || etat == "failed"
+        val sb = StringBuilder("Chaîne\n")
+        val ch = d.optJSONObject("chaine")
+        listOf("dsp" to "DSP C54x (ROM TI)", "qemu" to "ARM Calypso (QEMU)", "osmocon" to "osmocon (L1CTL)",
+               "mobile" to "mobile (couche 2/3)", "pont" to "pont radio (BTS ↔ DSP)").forEach { (k, t) ->
+            sb.append("${if (ch?.optBoolean(k) == true) "●" else "○"} $t\n")
+        }
+        sb.append("\nCœur de réseau\n")
+        val co = d.optJSONArray("coeur") ?: JSONArray()
+        for (i in 0 until co.length()) {
+            val c = co.getJSONObject(i)
+            sb.append("${if (c.optBoolean("actif")) "●" else "○"} %-5s %s\n".format(c.optString("nom"), c.optString("processus")))
+        }
+        val ab = d.optJSONArray("abonnes") ?: JSONArray()
+        sb.append("\nAbonnés du HLR (${ab.length()})\n")
+        for (i in 0 until minOf(ab.length(), 40)) {
+            val a = ab.getJSONObject(i)
+            sb.append("%-10s IMSI %s\n".format(a.optString("msisdn").ifEmpty { "—" }, a.optString("imsi")))
+        }
+        findViewById<TextView>(R.id.banc_text).text = sb.toString()
+    }
+
+    private fun bancAction(action: String) {
+        if (!enrolled || host.isEmpty()) return
+        val h = host
+        val st = findViewById<TextView>(R.id.banc_state)
+        st.text = "Le banc : …"
+        bg({ http("http://$h:8088/banc/action", Proxy.who(this).put("action", action), 10000) }) { d, err ->
+            if (d == null || !d.optBoolean("ok")) st.text = "Refusé : ${why(d, err)}"
+            bancAt = 0
         }
     }
 
